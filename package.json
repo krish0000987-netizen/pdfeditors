@@ -2,10 +2,16 @@
   "name": "editor-app-root",
   "version": "1.0.0",
   "private": true,
+  "workspaces": [
+    "editor"
+  ],
   "scripts": {
     "dev": "npm --prefix editor run dev",
     "build": "npm --prefix editor run build",
     "start": "npm --prefix editor run start",
     "test": "npm --prefix editor run test"
+  },
+  "dependencies": {
+    "next": "^16.3.4"
   }
 }
