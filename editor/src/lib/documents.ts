@@ -1,0 +1,166 @@
+import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { engine } from "@/lib/engine/client";
+import type { EngineEditResult } from "@/lib/engine/client";
+
+/** Path of the file backing the latest version of a document. */
+export async function getLatestVersionPath(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  documentId: string
+): Promise<{ path: string; versionNumber: number } | null> {
+  const { data } = await supabase
+    .from("document_versions")
+    .select("file_path, version_number")
+    .eq("document_id", documentId)
+    .order("version_number", { ascending: false })
+    .limit(1);
+  const row = data?.[0];
+  return row ? { path: row.file_path, versionNumber: row.version_number } : null;
+}
+
+/** Next sequential version number for a document. */
+export async function nextVersionNumber(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  documentId: string
+): Promise<number> {
+  const { data } = await supabase
+    .from("document_versions")
+    .select("version_number")
+    .eq("document_id", documentId)
+    .order("version_number", { ascending: false })
+    .limit(1);
+  return data?.[0] ? data[0].version_number + 1 : 1;
+}
+
+/**
+ * Create a new version row for an output produced by the engine.
+ * The original file (and every prior version file) is never overwritten.
+ */
+export async function createVersion(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  opts: {
+    documentId: string;
+    userId: string;
+    filePath: string;
+    operationType: string;
+    operationSummary: string;
+    pageCount?: number;
+  }
+) {
+  const versionNumber = await nextVersionNumber(supabase, opts.documentId);
+  const { data, error } = await supabase
+    .from("document_versions")
+    .insert({
+      document_id: opts.documentId,
+      version_number: versionNumber,
+      file_path: opts.filePath,
+      created_by: opts.userId,
+      operation_type: opts.operationType,
+      operation_summary: opts.operationSummary,
+      page_count: opts.pageCount ?? null,
+    })
+    .select()
+    .single();
+  if (error) throw new Error(`Version create failed: ${error.message}`);
+  return data;
+}
+
+/** Write an audit_logs row via the service-role client (RLS blocks direct inserts). */
+export async function audit(
+  opts: {
+    userId: string;
+    documentId?: string | null;
+    action: string;
+    metadata?: Record<string, unknown>;
+  }
+) {
+  try {
+    const admin = createAdminClient();
+    await admin.from("audit_logs").insert({
+      user_id: opts.userId,
+      document_id: opts.documentId ?? null,
+      action: opts.action,
+      metadata: opts.metadata ?? {},
+    });
+  } catch (e) {
+    console.error("audit log failed", e);
+  }
+}
+
+/** Verify the caller owns the document and return it. */
+export async function requireOwnedDocument(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  documentId: string
+) {
+  const { data: doc, error } = await supabase
+    .from("documents")
+    .select("*")
+    .eq("id", documentId)
+    .eq("owner_id", userId)
+    .single();
+  if (error || !doc) return null;
+  return doc;
+}
+
+/**
+ * Run an engine operation against the document's latest version and record
+ * the resulting file as a new version. `op` receives the source path and
+ * must return the engine output path (or null when the op only reads).
+ */
+export async function runEngineVersioned(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  opts: {
+    documentId: string;
+    userId: string;
+    sourcePath?: string; // defaults to latest version path
+    operationType: string;
+    operationSummary: string;
+    op: (sourcePath: string) => Promise<{ output_path: string | null }>;
+    metadata?: Record<string, unknown>;
+    auditAction?: string;
+  }
+): Promise<{
+  output_path: string | null;
+  version: Record<string, unknown> | null;
+  result: unknown;
+}> {
+  const source = opts.sourcePath ?? (await getLatestVersionPath(supabase, opts.documentId))?.path;
+  if (!source) throw new Error("Document has no editable file");
+
+  const result = await opts.op(source);
+  const outputPath = (result as { output_path?: string | null })?.output_path ?? null;
+
+  let version: Record<string, unknown> | null = null;
+  if (outputPath) {
+    version = (await createVersion(supabase, {
+      documentId: opts.documentId,
+      userId: opts.userId,
+      filePath: outputPath,
+      operationType: opts.operationType,
+      operationSummary: opts.operationSummary,
+    })) as unknown as Record<string, unknown>;
+
+    await supabase
+      .from("documents")
+      .update({ updated_at: new Date().toISOString() })
+      .eq("id", opts.documentId);
+
+    await audit({
+      userId: opts.userId,
+      documentId: opts.documentId,
+      action: opts.auditAction ?? "version_created",
+      metadata: {
+        operation_type: opts.operationType,
+        source_version_path: source,
+        new_version_path: outputPath,
+        ...opts.metadata,
+      },
+    });
+  }
+
+  return { output_path: outputPath, version, result };
+}
+
+export type { EngineEditResult };
+export { engine };
