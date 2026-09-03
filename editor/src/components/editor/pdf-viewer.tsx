@@ -20,6 +20,8 @@ import {
   Trash2,
   Copy,
   Lock,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { extractTextFromPdfPage } from "@/lib/pdf/text-extractor";
 import { extractImagesFromPdfPage } from "@/lib/pdf/image-extractor";
@@ -78,6 +80,7 @@ export function PDFViewer({
   const overlayRef = useRef<HTMLDivElement>(null);
   const docRef = useRef<pdfjs.PDFDocumentProxy | null>(null);
   const renderTaskRef = useRef<pdfjs.RenderTask | null>(null);
+  const loadingTaskRef = useRef<pdfjs.PDFDocumentLoadingTask | null>(null);
   const passwordCallbackRef = useRef<((pwd: string) => void) | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rendering, setRendering] = useState(false);
@@ -86,6 +89,7 @@ export function PDFViewer({
   const [isPasswordProtected, setIsPasswordProtected] = useState(false);
   const [passwordInput, setPasswordInput] = useState("");
   const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
   const [unlocking, setUnlocking] = useState(false);
 
   // Dragging / Resizing State
@@ -112,19 +116,29 @@ export function PDFViewer({
       if (pwd) setUnlocking(true);
 
       try {
+        if (loadingTaskRef.current) {
+          try {
+            await loadingTaskRef.current.destroy();
+          } catch {}
+          loadingTaskRef.current = null;
+        }
+
         // Clone ArrayBuffer so PDF.js worker never detaches original data
         const clonedBytes = new Uint8Array(data.slice(0));
         const loadingTask = pdfjs.getDocument({
           data: clonedBytes,
           password: pwd || undefined,
+          cMapUrl: "/cmaps/",
+          cMapPacked: true,
         });
+        loadingTaskRef.current = loadingTask;
 
         loadingTask.onPassword = (callback: (pwd: string) => void, reason: number) => {
           passwordCallbackRef.current = callback;
           setIsPasswordProtected(true);
           setUnlocking(false);
           if (reason === 2) {
-            setPasswordError("Incorrect password. Please try again.");
+            setPasswordError("Incorrect password. Please verify and try again.");
           }
         };
 
@@ -143,7 +157,7 @@ export function PDFViewer({
         if (err?.name === "PasswordException" || msg.includes("password")) {
           setIsPasswordProtected(true);
           if (pwd) {
-            setPasswordError("Incorrect password. Please try again.");
+            setPasswordError("Incorrect password. Please verify and try again.");
           }
         } else {
           setError(err?.message || "Failed to load PDF");
@@ -155,22 +169,10 @@ export function PDFViewer({
 
   const handleUnlockPassword = useCallback(
     (pwd: string) => {
-      const clean = pwd.trim();
-      if (!clean) return;
+      if (!pwd) return;
       setUnlocking(true);
       setPasswordError(null);
-
-      // If PDF.js is waiting for the onPassword callback, supply it directly
-      if (passwordCallbackRef.current) {
-        try {
-          passwordCallbackRef.current(clean);
-          return;
-        } catch {
-          // fallback to reload
-        }
-      }
-
-      void loadDocument(clean);
+      void loadDocument(pwd);
     },
     [loadDocument]
   );
@@ -433,28 +435,38 @@ export function PDFViewer({
           className="w-full space-y-3"
         >
           <div className="space-y-1">
-            <input
-              type="password"
-              autoFocus
-              placeholder="Enter password"
-              value={passwordInput}
-              onChange={(e) => {
-                setPasswordInput(e.target.value);
-                if (passwordError) setPasswordError(null);
-              }}
-              className={`w-full px-3.5 py-2.5 border rounded-xl text-sm outline-none transition-all ${
-                passwordError
-                  ? "border-red-500 focus:ring-2 focus:ring-red-200"
-                  : "border-gray-300 focus:border-blue-600 focus:ring-2 focus:ring-blue-100"
-              }`}
-            />
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                autoFocus
+                placeholder="Enter password"
+                value={passwordInput}
+                onChange={(e) => {
+                  setPasswordInput(e.target.value);
+                  if (passwordError) setPasswordError(null);
+                }}
+                className={`w-full pl-3.5 pr-10 py-2.5 border rounded-xl text-sm outline-none transition-all ${
+                  passwordError
+                    ? "border-red-500 focus:ring-2 focus:ring-red-200"
+                    : "border-gray-300 focus:border-blue-600 focus:ring-2 focus:ring-blue-100"
+                }`}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1"
+                title={showPassword ? "Hide password" : "Show password"}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
             {passwordError && (
               <p className="text-xs text-red-600 font-medium">{passwordError}</p>
             )}
           </div>
           <button
             type="submit"
-            disabled={unlocking || !passwordInput.trim()}
+            disabled={unlocking || !passwordInput}
             className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-semibold shadow-sm transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
           >
             {unlocking ? (
