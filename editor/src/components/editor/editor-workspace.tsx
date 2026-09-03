@@ -21,6 +21,8 @@ import {
   StickyNote,
   Save,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { PDFViewer, type SelectionInfo } from "./pdf-viewer";
 import { EditorRibbon } from "./editor-ribbon";
@@ -32,24 +34,27 @@ import {
   PagesPanel,
 } from "./editor-panels";
 import { AIPanel } from "@/components/ai/ai-panel";
-import { bakePdfOverlays } from "@/lib/pdf-baker";
+import { exportPdfDocument } from "@/lib/pdf/exporter";
+import { HistoryManager } from "@/lib/pdf/history";
+import {
+  createEmptyDocumentModel,
+  createEmptyPageModel,
+  type DocumentModel,
+  type PageModel,
+  type TextElement,
+  type ImageElement,
+  type ShapeElement,
+  type RedactionElement,
+  type ShapeType,
+} from "@/lib/pdf/document-model";
 import type {
   Match,
   Version,
   EditorDocument,
   ActiveTool,
-  CanvasTextElement,
-  CanvasImageElement,
-  CanvasWhiteoutElement,
 } from "./types";
 
 type Panel = "ai" | "find" | "edit" | "redact" | "versions" | "pages" | "none";
-
-interface HistoryState {
-  textElements: CanvasTextElement[];
-  imageElements: CanvasImageElement[];
-  whiteoutElements: CanvasWhiteoutElement[];
-}
 
 export function EditorWorkspace({ documentId }: { documentId: string }) {
   const router = useRouter();
@@ -76,80 +81,70 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
   const [toast, setToast] = useState<string | null>(null);
   const [externalAiPrompt, setExternalAiPrompt] = useState<string | null>(null);
 
-  // ── MS WORD CANVAS OVERLAY ELEMENTS ──
+  // ── CORE DOCUMENT MODEL & SELECTION ──
+  const [docModel, setDocModel] = useState<DocumentModel>(() =>
+    createEmptyDocumentModel(documentId, "document.pdf")
+  );
   const [activeTool, setActiveTool] = useState<ActiveTool>("select");
-  const [textElements, setTextElements] = useState<CanvasTextElement[]>([]);
-  const [imageElements, setImageElements] = useState<CanvasImageElement[]>([]);
-  const [whiteoutElements, setWhiteoutElements] = useState<CanvasWhiteoutElement[]>([]);
   const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
-  const [selectedElementType, setSelectedElementType] = useState<"text" | "image" | "whiteout" | null>(null);
+  const [selectedElementType, setSelectedElementType] = useState<
+    "text" | "image" | "shape" | "redaction" | null
+  >(null);
 
-  // Undo / Redo stacks
-  const [historyStack, setHistoryStack] = useState<HistoryState[]>([]);
-  const [redoStack, setRedoStack] = useState<HistoryState[]>([]);
+  // Command-based History Manager
+  const historyManagerRef = useRef<HistoryManager>(new HistoryManager(50));
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+
+  const updateHistoryStatus = useCallback(() => {
+    setCanUndo(historyManagerRef.current.canUndo());
+    setCanRedo(historyManagerRef.current.canRedo());
+  }, []);
+
+  const recordHistory = useCallback(
+    (desc: string, beforeState: DocumentModel, afterState: DocumentModel) => {
+      historyManagerRef.current.record("update_element", desc, beforeState, afterState);
+      updateHistoryStatus();
+    },
+    [updateHistoryStatus]
+  );
+
+  const handleUndo = useCallback(() => {
+    const prevState = historyManagerRef.current.undo();
+    if (prevState) {
+      setDocModel(prevState);
+      updateHistoryStatus();
+    }
+  }, [updateHistoryStatus]);
+
+  const handleRedo = useCallback(() => {
+    const nextState = historyManagerRef.current.redo();
+    if (nextState) {
+      setDocModel(nextState);
+      updateHistoryStatus();
+    }
+  }, [updateHistoryStatus]);
 
   const viewerScrollRef = useRef<HTMLDivElement>(null);
 
-  const pushHistory = useCallback(() => {
-    setHistoryStack((prev) => [
-      ...prev.slice(-20),
-      {
-        textElements: JSON.parse(JSON.stringify(textElements)),
-        imageElements: JSON.parse(JSON.stringify(imageElements)),
-        whiteoutElements: JSON.parse(JSON.stringify(whiteoutElements)),
-      },
-    ]);
-    setRedoStack([]);
-  }, [textElements, imageElements, whiteoutElements]);
-
-  const handleUndo = useCallback(() => {
-    if (historyStack.length === 0) return;
-    const last = historyStack[historyStack.length - 1];
-    setRedoStack((prev) => [
-      ...prev,
-      {
-        textElements: JSON.parse(JSON.stringify(textElements)),
-        imageElements: JSON.parse(JSON.stringify(imageElements)),
-        whiteoutElements: JSON.parse(JSON.stringify(whiteoutElements)),
-      },
-    ]);
-    setTextElements(last.textElements);
-    setImageElements(last.imageElements);
-    setWhiteoutElements(last.whiteoutElements);
-    setHistoryStack((prev) => prev.slice(0, -1));
-  }, [historyStack, textElements, imageElements, whiteoutElements]);
-
-  const handleRedo = useCallback(() => {
-    if (redoStack.length === 0) return;
-    const next = redoStack[redoStack.length - 1];
-    setHistoryStack((prev) => [
-      ...prev,
-      {
-        textElements: JSON.parse(JSON.stringify(textElements)),
-        imageElements: JSON.parse(JSON.stringify(imageElements)),
-        whiteoutElements: JSON.parse(JSON.stringify(whiteoutElements)),
-      },
-    ]);
-    setTextElements(next.textElements);
-    setImageElements(next.imageElements);
-    setWhiteoutElements(next.whiteoutElements);
-    setRedoStack((prev) => prev.slice(0, -1));
-  }, [redoStack, textElements, imageElements, whiteoutElements]);
-
   const loadDoc = useCallback(async () => {
-    const res = await fetch(`/api/docs/${documentId}`);
-    const data = await res.json();
-    if (data.document) {
-      setDoc(data.document);
-      setVersions(data.versions ?? []);
-      const latest = (data.versions ?? []).reduce(
-        (acc: Version | null, v: Version) =>
-          !acc || v.version_number > acc.version_number ? v : acc,
-        null
-      );
-      if (latest) setCurrentVersionNumber(latest.version_number);
-    } else {
-      setError("Document not found");
+    try {
+      const res = await fetch(`/api/docs/${documentId}`);
+      const data = await res.json();
+      if (data.document) {
+        setDoc(data.document);
+        setVersions(data.versions ?? []);
+        const latest = (data.versions ?? []).reduce(
+          (acc: Version | null, v: Version) =>
+            !acc || v.version_number > acc.version_number ? v : acc,
+          null
+        );
+        if (latest) setCurrentVersionNumber(latest.version_number);
+      } else {
+        setError("Document not found");
+      }
+    } catch {
+      setError("Failed to fetch document metadata");
     }
   }, [documentId]);
 
@@ -185,56 +180,110 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
     void Promise.resolve().then(() => loadPdf());
   }, [loadPdf]);
 
-  useEffect(() => {
-    if (page > totalPages && totalPages > 0) {
-      void Promise.resolve().then(() => setPage(totalPages));
-    }
-  }, [totalPages, page]);
-
   const showToast = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 3500);
   };
 
+  const handlePageCount = useCallback((numPages: number) => {
+    setTotalPages(numPages);
+    setDocModel((prev) => {
+      if (prev.pages.length === numPages) return prev;
+      const newPages: PageModel[] = [];
+      for (let i = 0; i < numPages; i++) {
+        if (prev.pages[i]) {
+          newPages.push(prev.pages[i]);
+        } else {
+          newPages.push(createEmptyPageModel(i));
+        }
+      }
+      return {
+        ...prev,
+        pageCount: numPages,
+        pages: newPages,
+      };
+    });
+  }, []);
+
+  // When a page extracts original text/images from PDF.js
+  const handlePageExtracted = useCallback(
+    (pageIndex: number, extractedTexts: TextElement[], extractedImages: ImageElement[]) => {
+      setDocModel((prev) => {
+        const nextPages = [...prev.pages];
+        if (!nextPages[pageIndex]) {
+          nextPages[pageIndex] = createEmptyPageModel(pageIndex);
+        }
+        const currentPage = nextPages[pageIndex];
+        // Only populate original items if page has no text elements yet
+        if (currentPage.textElements.length === 0 && currentPage.imageElements.length === 0) {
+          nextPages[pageIndex] = {
+            ...currentPage,
+            textElements: extractedTexts,
+            imageElements: extractedImages,
+          };
+          return { ...prev, pages: nextPages };
+        }
+        return prev;
+      });
+    },
+    []
+  );
+
+  const currentPageIndex = page - 1;
+  const currentPageModel = docModel.pages[currentPageIndex] || createEmptyPageModel(currentPageIndex);
+
   // ── ELEMENT ADDITION HANDLERS ──
   const handleAddText = useCallback(
     (customX?: number, customY?: number) => {
-      pushHistory();
-      const newId = crypto.randomUUID();
-      const newElement: CanvasTextElement = {
+      const newId = `text-add-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      const newElement: TextElement = {
         id: newId,
-        page: page - 1,
+        pageIndex: currentPageIndex,
         x: customX ?? 80,
         y: customY ?? 120,
         width: 180,
-        height: 40,
+        height: 35,
         text: "Type here...",
         fontFamily: "Helvetica, Arial, sans-serif",
         fontSize: 12,
         fontWeight: "normal",
         fontStyle: "normal",
         underline: false,
+        strike: false,
         color: "#000000",
         backgroundColor: "transparent",
         textAlign: "left",
+        lineHeight: 1.25,
+        letterSpacing: 0,
         opacity: 1,
+        rotation: 0,
+        source: "added",
+        modified: false,
+        deleted: false,
       };
-      setTextElements((prev) => [...prev, newElement]);
+
+      setDocModel((prev) => {
+        const next = JSON.parse(JSON.stringify(prev)) as DocumentModel;
+        if (!next.pages[currentPageIndex]) next.pages[currentPageIndex] = createEmptyPageModel(currentPageIndex);
+        next.pages[currentPageIndex].textElements.push(newElement);
+        recordHistory("Add text element", prev, next);
+        return next;
+      });
+
       setSelectedElementId(newId);
       setSelectedElementType("text");
       setActiveTool("select");
       showToast("Text box added — double click to edit");
     },
-    [page, pushHistory]
+    [currentPageIndex, recordHistory]
   );
 
   const handleAddImage = useCallback(
     (dataUrl: string, width = 150, height = 80) => {
-      pushHistory();
-      const newId = crypto.randomUUID();
-      const newElement: CanvasImageElement = {
+      const newId = `img-add-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+      const newElement: ImageElement = {
         id: newId,
-        page: page - 1,
+        pageIndex: currentPageIndex,
         x: 100,
         y: 150,
         width,
@@ -242,41 +291,130 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
         dataUrl,
         opacity: 1,
         rotation: 0,
+        aspectRatioLocked: true,
+        source: "added",
+        modified: false,
+        deleted: false,
       };
-      setImageElements((prev) => [...prev, newElement]);
+
+      setDocModel((prev) => {
+        const next = JSON.parse(JSON.stringify(prev)) as DocumentModel;
+        if (!next.pages[currentPageIndex]) next.pages[currentPageIndex] = createEmptyPageModel(currentPageIndex);
+        next.pages[currentPageIndex].imageElements.push(newElement);
+        recordHistory("Add image element", prev, next);
+        return next;
+      });
+
       setSelectedElementId(newId);
       setSelectedElementType("image");
       showToast("Image inserted onto page");
     },
-    [page, pushHistory]
+    [currentPageIndex, recordHistory]
   );
+
+  const handleAddShape = useCallback(
+    (type: ShapeType) => {
+      const newId = `shape-${type}-${Date.now()}`;
+      const newShape: ShapeElement = {
+        id: newId,
+        pageIndex: currentPageIndex,
+        type,
+        x: 120,
+        y: 140,
+        width: type === "circle" ? 80 : 120,
+        height: type === "line" ? 2 : type === "circle" ? 80 : 50,
+        fillColor: type === "highlight" ? "#fef08a" : "transparent",
+        strokeColor: type === "highlight" ? "#fef08a" : "#2563eb",
+        strokeWidth: type === "highlight" ? 0 : 2,
+        opacity: type === "highlight" ? 0.35 : 1,
+        rotation: 0,
+        source: "added",
+        modified: false,
+        deleted: false,
+      };
+
+      setDocModel((prev) => {
+        const next = JSON.parse(JSON.stringify(prev)) as DocumentModel;
+        if (!next.pages[currentPageIndex]) next.pages[currentPageIndex] = createEmptyPageModel(currentPageIndex);
+        next.pages[currentPageIndex].shapeElements.push(newShape);
+        recordHistory(`Add ${type} shape`, prev, next);
+        return next;
+      });
+
+      setSelectedElementId(newId);
+      setSelectedElementType("shape");
+      showToast(`${type} shape added`);
+    },
+    [currentPageIndex, recordHistory]
+  );
+
+  const handleAddRedaction = useCallback(() => {
+    const newId = `redact-${Date.now()}`;
+    const newRedaction: RedactionElement = {
+      id: newId,
+      pageIndex: currentPageIndex,
+      x: 100,
+      y: 120,
+      width: 140,
+      height: 25,
+      fillColor: "#000000",
+      overlayText: "REDACTED",
+      overlayTextColor: "#ffffff",
+      source: "added",
+      deleted: false,
+    };
+
+    setDocModel((prev) => {
+      const next = JSON.parse(JSON.stringify(prev)) as DocumentModel;
+      if (!next.pages[currentPageIndex]) next.pages[currentPageIndex] = createEmptyPageModel(currentPageIndex);
+      next.pages[currentPageIndex].redactionElements.push(newRedaction);
+      recordHistory("Add redaction element", prev, next);
+      return next;
+    });
+
+    setSelectedElementId(newId);
+    setSelectedElementType("redaction");
+    showToast("Redaction box added");
+  }, [currentPageIndex, recordHistory]);
 
   const handleAddWhiteout = useCallback(
     (customX?: number, customY?: number) => {
-      pushHistory();
-      const newId = crypto.randomUUID();
-      const newElement: CanvasWhiteoutElement = {
+      const newId = `whiteout-${Date.now()}`;
+      const newShape: ShapeElement = {
         id: newId,
-        page: page - 1,
+        pageIndex: currentPageIndex,
+        type: "rectangle",
         x: customX ?? 80,
         y: customY ?? 120,
         width: 140,
         height: 25,
-        color: "#ffffff",
+        fillColor: "#ffffff",
+        strokeColor: "#ffffff",
+        strokeWidth: 0,
+        opacity: 1,
+        rotation: 0,
+        source: "added",
+        modified: false,
+        deleted: false,
       };
-      setWhiteoutElements((prev) => [...prev, newElement]);
+
+      setDocModel((prev) => {
+        const next = JSON.parse(JSON.stringify(prev)) as DocumentModel;
+        if (!next.pages[currentPageIndex]) next.pages[currentPageIndex] = createEmptyPageModel(currentPageIndex);
+        next.pages[currentPageIndex].shapeElements.push(newShape);
+        recordHistory("Add whiteout element", prev, next);
+        return next;
+      });
+
       setSelectedElementId(newId);
-      setSelectedElementType("whiteout");
-      setActiveTool("select");
+      setSelectedElementType("shape");
       showToast("Whiteout box added");
     },
-    [page, pushHistory]
+    [currentPageIndex, recordHistory]
   );
 
   const handleAddStamp = useCallback(
     (title: string, color: string, bg: string) => {
-      pushHistory();
-      // Generate SVG stamp
       const svg = `
         <svg xmlns="http://www.w3.org/2000/svg" width="200" height="70" viewBox="0 0 200 70">
           <rect x="3" y="3" width="194" height="64" rx="6" fill="${bg}" stroke="${color}" stroke-width="3" stroke-dasharray="6,3"/>
@@ -287,79 +425,175 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
       const dataUrl = `data:image/svg+xml;base64,${btoa(svg)}`;
       handleAddImage(dataUrl, 180, 60);
     },
-    [handleAddImage, pushHistory]
+    [handleAddImage]
   );
 
+  // ── ELEMENT UPDATE HANDLERS ──
   const handleUpdateText = useCallback(
-    (id: string, updates: Partial<CanvasTextElement>) => {
-      setTextElements((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, ...updates } : t))
-      );
+    (id: string, updates: Partial<TextElement>) => {
+      setDocModel((prev) => {
+        const next = JSON.parse(JSON.stringify(prev)) as DocumentModel;
+        for (const p of next.pages) {
+          const el = p.textElements.find((t) => t.id === id);
+          if (el) {
+            Object.assign(el, updates, { modified: true });
+            break;
+          }
+        }
+        return next;
+      });
     },
     []
-  );
-
-  const handleUpdateSelectedText = useCallback(
-    (updates: Partial<CanvasTextElement>) => {
-      if (selectedElementId && selectedElementType === "text") {
-        handleUpdateText(selectedElementId, updates);
-      }
-    },
-    [selectedElementId, selectedElementType, handleUpdateText]
   );
 
   const handleUpdateImage = useCallback(
-    (id: string, updates: Partial<CanvasImageElement>) => {
-      setImageElements((prev) =>
-        prev.map((img) => (img.id === id ? { ...img, ...updates } : img))
-      );
+    (id: string, updates: Partial<ImageElement>) => {
+      setDocModel((prev) => {
+        const next = JSON.parse(JSON.stringify(prev)) as DocumentModel;
+        for (const p of next.pages) {
+          const el = p.imageElements.find((img) => img.id === id);
+          if (el) {
+            Object.assign(el, updates, { modified: true });
+            break;
+          }
+        }
+        return next;
+      });
     },
     []
   );
 
-  const handleUpdateWhiteout = useCallback(
-    (id: string, updates: Partial<CanvasWhiteoutElement>) => {
-      setWhiteoutElements((prev) =>
-        prev.map((w) => (w.id === id ? { ...w, ...updates } : w))
-      );
+  const handleUpdateShape = useCallback(
+    (id: string, updates: Partial<ShapeElement>) => {
+      setDocModel((prev) => {
+        const next = JSON.parse(JSON.stringify(prev)) as DocumentModel;
+        for (const p of next.pages) {
+          const el = p.shapeElements.find((s) => s.id === id);
+          if (el) {
+            Object.assign(el, updates, { modified: true });
+            break;
+          }
+        }
+        return next;
+      });
     },
     []
   );
 
-  const handleDeleteSelected = useCallback(() => {
-    if (!selectedElementId) return;
-    pushHistory();
-    if (selectedElementType === "text") {
-      setTextElements((prev) => prev.filter((t) => t.id !== selectedElementId));
-    } else if (selectedElementType === "image") {
-      setImageElements((prev) => prev.filter((img) => img.id !== selectedElementId));
-    } else if (selectedElementType === "whiteout") {
-      setWhiteoutElements((prev) => prev.filter((w) => w.id !== selectedElementId));
-    }
-    setSelectedElementId(null);
-    setSelectedElementType(null);
-  }, [selectedElementId, selectedElementType, pushHistory]);
+  const handleUpdateRedaction = useCallback(
+    (id: string, updates: Partial<RedactionElement>) => {
+      setDocModel((prev) => {
+        const next = JSON.parse(JSON.stringify(prev)) as DocumentModel;
+        for (const p of next.pages) {
+          const el = p.redactionElements.find((r) => r.id === id);
+          if (el) {
+            Object.assign(el, updates);
+            break;
+          }
+        }
+        return next;
+      });
+    },
+    []
+  );
 
-  // ── SAVE & BAKE OVERLAYS INTO IMMUTABLE PDF ──
+  const handleDeleteElement = useCallback(
+    (id: string) => {
+      setDocModel((prev) => {
+        const next = JSON.parse(JSON.stringify(prev)) as DocumentModel;
+        for (const p of next.pages) {
+          const textEl = p.textElements.find((t) => t.id === id);
+          if (textEl) {
+            if (textEl.source === "original") textEl.deleted = true;
+            else p.textElements = p.textElements.filter((t) => t.id !== id);
+            break;
+          }
+          const imgEl = p.imageElements.find((i) => i.id === id);
+          if (imgEl) {
+            if (imgEl.source === "original") imgEl.deleted = true;
+            else p.imageElements = p.imageElements.filter((i) => i.id !== id);
+            break;
+          }
+          const shapeEl = p.shapeElements.find((s) => s.id === id);
+          if (shapeEl) {
+            p.shapeElements = p.shapeElements.filter((s) => s.id !== id);
+            break;
+          }
+          const redEl = p.redactionElements.find((r) => r.id === id);
+          if (redEl) {
+            p.redactionElements = p.redactionElements.filter((r) => r.id !== id);
+            break;
+          }
+        }
+        recordHistory("Delete element", prev, next);
+        return next;
+      });
+
+      setSelectedElementId(null);
+      setSelectedElementType(null);
+    },
+    [recordHistory]
+  );
+
+  const handleDuplicateElement = useCallback(
+    (id: string) => {
+      setDocModel((prev) => {
+        const next = JSON.parse(JSON.stringify(prev)) as DocumentModel;
+        for (const p of next.pages) {
+          const textEl = p.textElements.find((t) => t.id === id);
+          if (textEl) {
+            const dupId = `text-dup-${Date.now()}`;
+            p.textElements.push({
+              ...textEl,
+              id: dupId,
+              x: textEl.x + 15,
+              y: textEl.y + 15,
+              source: "added",
+              modified: false,
+              deleted: false,
+            });
+            setSelectedElementId(dupId);
+            setSelectedElementType("text");
+            break;
+          }
+          const imgEl = p.imageElements.find((i) => i.id === id);
+          if (imgEl) {
+            const dupId = `img-dup-${Date.now()}`;
+            p.imageElements.push({
+              ...imgEl,
+              id: dupId,
+              x: imgEl.x + 15,
+              y: imgEl.y + 15,
+              source: "added",
+              modified: false,
+              deleted: false,
+            });
+            setSelectedElementId(dupId);
+            setSelectedElementType("image");
+            break;
+          }
+        }
+        recordHistory("Duplicate element", prev, next);
+        return next;
+      });
+      showToast("Element duplicated");
+    },
+    [recordHistory]
+  );
+
+  // ── SAVE & EXPORT INTO TRUE PDF ──
   const saveVisualEdits = useCallback(async () => {
     if (!pdfData) return;
     setSavingBake(true);
     try {
-      // 1. Bake all overlays into a fresh PDF byte array
-      const bakedBytes = await bakePdfOverlays(pdfData, {
-        textElements,
-        imageElements,
-        whiteoutElements,
-      });
+      // 1. Export PDF using robust pdf-lib pipeline
+      const bakedBytes = await exportPdfDocument(pdfData, docModel);
 
       // 2. Upload baked PDF to server
       const blob = new Blob([bakedBytes.buffer as ArrayBuffer], { type: "application/pdf" });
       const formData = new FormData();
       formData.append("file", blob, `${doc?.name || "document"}.pdf`);
-      formData.append(
-        "summary",
-        `MS Word Edits: ${textElements.length} text, ${imageElements.length} images, ${whiteoutElements.length} whiteouts`
-      );
+      formData.append("summary", `True Word-style PDF modifications baked`);
 
       const res = await fetch(`/api/docs/${documentId}/bake`, {
         method: "POST",
@@ -367,14 +601,6 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to save baked PDF");
-
-      // 3. Reset local canvas overlays and refresh
-      setTextElements([]);
-      setImageElements([]);
-      setWhiteoutElements([]);
-      setSelectedElementId(null);
-      setHistoryStack([]);
-      setRedoStack([]);
 
       await loadPdf(data.versionNumber);
       await loadDoc();
@@ -384,758 +610,345 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
     } finally {
       setSavingBake(false);
     }
-  }, [
-    pdfData,
-    textElements,
-    imageElements,
-    whiteoutElements,
-    doc?.name,
-    documentId,
-    loadPdf,
-    loadDoc,
-  ]);
+  }, [pdfData, docModel, doc?.name, documentId, loadPdf, loadDoc]);
 
   const exportPdf = useCallback(async () => {
-    if (
-      textElements.length > 0 ||
-      imageElements.length > 0 ||
-      whiteoutElements.length > 0
-    ) {
-      // Bake locally first so downloaded PDF includes all pending edits
-      if (pdfData) {
-        const baked = await bakePdfOverlays(pdfData, {
-          textElements,
-          imageElements,
-          whiteoutElements,
-        });
-        const blob = new Blob([baked.buffer as ArrayBuffer], { type: "application/pdf" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = doc?.name || "edited_document.pdf";
-        a.click();
-        URL.revokeObjectURL(url);
-        return;
-      }
-    }
-    window.open(`/api/docs/${documentId}/file?download=1`, "_blank");
-  }, [textElements, imageElements, whiteoutElements, pdfData, doc?.name, documentId]);
-
-  // ── ENGINE CALLS ──
-  const engineCall = useCallback(
-    async (body: Record<string, unknown>): Promise<any> => {
-      const res = await fetch(`/api/docs/${documentId}/engine`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Engine operation failed");
-      return data;
-    },
-    [documentId]
-  );
-
-  const refreshAfterEdit = useCallback(
-    async (result: any, summary: string) => {
-      if (result?.output_path || result?.dry_run === false) {
-        await loadPdf();
-        await loadDoc();
-        showToast(summary);
-      }
-    },
-    [loadPdf, loadDoc]
-  );
-
-  const doFind = useCallback(
-    async (text: string, scope: "page" | "document") => {
-      if (!text) return [];
-      const result = await engineCall({
-        action: "find",
-        search_text: text,
-        page: scope === "page" ? page - 1 : undefined,
-      });
-      setMatches(result.matches ?? []);
-      return (result.matches ?? []) as Match[];
-    },
-    [engineCall, page]
-  );
-
-  const doPreview = useCallback(
-    async (
-      find: string,
-      replace: string,
-      scope: "page" | "document"
-    ): Promise<{ count: number; warnings: string[] }> => {
-      setBusy(true);
-      try {
-        const result = await engineCall({
-          action: "replace_all",
-          search: find,
-          replacement: replace,
-          dry_run: true,
-        });
-        return { count: result.count ?? 0, warnings: [] };
-      } catch (e) {
-        showToast(e instanceof Error ? e.message : "Preview failed");
-        return { count: 0, warnings: [] };
-      } finally {
-        setBusy(false);
-      }
-    },
-    [engineCall]
-  );
-
-  const doReplaceAll = useCallback(
-    async (find: string, replace: string, _scope: "page" | "document"): Promise<void> => {
-      setBusy(true);
-      try {
-        const result = await engineCall({
-          action: "replace_all",
-          search: find,
-          replacement: replace,
-        });
-        await refreshAfterEdit(
-          result,
-          `Replaced ${result.count ?? 0} occurrence(s) — new version saved`
-        );
-        setMatches([]);
-      } catch (e) {
-        showToast(e instanceof Error ? e.message : "Replace failed");
-      } finally {
-        setBusy(false);
-      }
-    },
-    [engineCall, refreshAfterEdit]
-  );
-
-  const doTextPreview = useCallback(
-    async (find: string, _replace: string) => {
-      if (!find) return null;
-      setBusy(true);
-      try {
-        const found = await doFind(find, "document");
-        const pageMatches = found.filter((m) => m.page_number === page - 1);
-        return { count: pageMatches.length || found.length, warnings: [] };
-      } finally {
-        setBusy(false);
-      }
-    },
-    [doFind, page]
-  );
-
-  const doTextApply = useCallback(
-    async (find: string, replace: string) => {
-      if (!find) return;
-      setBusy(true);
-      try {
-        const result = await engineCall({
-          action: "replace",
-          search_text: find,
-          new_text: replace,
-          match_id: 0,
-          page: page - 1,
-        });
-        await refreshAfterEdit(result, "Text replaced — new version saved");
-      } catch (e) {
-        showToast(e instanceof Error ? e.message : "Replace failed");
-      } finally {
-        setBusy(false);
-      }
-    },
-    [engineCall, page, refreshAfterEdit]
-  );
-
-  const doRedactPreview = useCallback(
-    async (find: string) => doFind(find, "document"),
-    [doFind]
-  );
-
-  const doRedactApply = useCallback(
-    async (targetPage: number, bbox: Match["bounding_box"]) => {
-      setBusy(true);
-      try {
-        const result = await engineCall({
-          action: "redact",
-          regions: [{ page: targetPage, bbox }],
-        });
-        await refreshAfterEdit(
-          result,
-          "Redaction applied — content removed, new version saved"
-        );
-      } catch (e) {
-        showToast(e instanceof Error ? e.message : "Redaction failed");
-      } finally {
-        setBusy(false);
-      }
-    },
-    [engineCall, refreshAfterEdit]
-  );
-
-  const pageOp = useCallback(
-    async (body: Record<string, unknown>, summary: string) => {
-      setBusy(true);
-      try {
-        const result = await engineCall(body);
-        await refreshAfterEdit(result, summary);
-      } catch (e) {
-        showToast(e instanceof Error ? e.message : "Page operation failed");
-      } finally {
-        setBusy(false);
-      }
-    },
-    [engineCall, refreshAfterEdit]
-  );
-
-  const addStickyNote = useCallback(async () => {
-    if (!selection) {
-      showToast("Select a spot in the text first, then add a note.");
+    if (pdfData) {
+      const bakedBytes = await exportPdfDocument(pdfData, docModel);
+      const blob = new Blob([bakedBytes.buffer as ArrayBuffer], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = doc?.name || "edited_document.pdf";
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast("Downloading edited PDF");
       return;
     }
-    const note = prompt("Note contents:");
-    if (!note) return;
-    setBusy(true);
-    try {
-      const result = await engineCall({
-        action: "add_annotation",
-        page: page - 1,
-        subtype: "Text",
-        rect: [72, 700, 122, 750],
-        data: { contents: note, author: "EDITOR" },
-      });
-      await refreshAfterEdit(result, "Sticky note added — new version saved");
-    } catch (e) {
-      showToast(e instanceof Error ? e.message : "Could not add note");
-    } finally {
-      setBusy(false);
-    }
-  }, [selection, page, engineCall, refreshAfterEdit]);
+    window.open(`/api/docs/${documentId}/file?download=1`, "_blank");
+  }, [pdfData, docModel, doc?.name, documentId]);
 
-  const openCompare = useCallback(async () => {
-    const original = versions.find((v) => v.version_number === 1);
-    if (!original) return;
-    setBusy(true);
-    try {
-      const res = await fetch(`/api/docs/${documentId}/file?version=1`);
-      if (res.ok) {
-        const buf = await res.arrayBuffer();
-        setCompareOriginal(new Uint8Array(buf));
-        setCompare(true);
-      }
-    } finally {
-      setBusy(false);
-    }
-  }, [versions, documentId]);
-
-  const toggleFavorite = async () => {
-    if (!doc) return;
-    await fetch(`/api/docs/${doc.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ is_favorite: !doc.is_favorite }),
-    });
-    setDoc({ ...doc, is_favorite: !doc.is_favorite });
-  };
-
-  const selectVersion = (v: Version) => {
-    setCurrentVersionNumber(v.version_number);
-    loadPdf(v.version_number);
-  };
-
-  const selectedTextObj =
-    selectedElementType === "text"
-      ? textElements.find((t) => t.id === selectedElementId) || null
-      : null;
-
-  const hasUnsavedVisuals =
-    textElements.length > 0 ||
-    imageElements.length > 0 ||
-    whiteoutElements.length > 0;
-
-  if (error && !doc) {
-    return (
-      <div className="h-screen flex items-center justify-center">
-        <div className="text-center">
-          <p className="text-sm text-red-500 mb-3">{error}</p>
-          <button
-            onClick={() => router.push("/documents")}
-            className="text-sm text-indigo-600 hover:underline"
-          >
-            ← Back to documents
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  const activeVersion = versions.find(
-    (v) => v.version_number === currentVersionNumber
-  );
+  const selectedTextEl = currentPageModel.textElements.find((t) => t.id === selectedElementId) || null;
 
   return (
-    <div className="h-screen flex flex-col bg-gray-100 overflow-hidden">
-      {/* ── TOP HEADER / NAV BAR ── */}
-      <div className="h-12 bg-white border-b border-gray-200 flex items-center gap-1.5 px-3 flex-shrink-0 z-30 shadow-xs">
-        <button
-          onClick={() => router.push("/documents")}
-          className="p-1.5 rounded hover:bg-gray-100 text-gray-500"
-          title="Back to documents"
-        >
-          <ArrowLeft size={17} />
-        </button>
-        <span className="h-5 w-px bg-gray-200 mx-1" />
-        <button
-          onClick={toggleFavorite}
-          className="p-1.5 rounded hover:bg-gray-100"
-          title="Favorite"
-        >
-          <Star
-            size={16}
-            className={doc?.is_favorite ? "text-yellow-500" : "text-gray-400"}
-            fill={doc?.is_favorite ? "currentColor" : "none"}
-          />
-        </button>
-        <h1 className="text-sm font-semibold text-gray-900 truncate max-w-[180px]">
-          {doc?.name ?? "…"}
-        </h1>
-        <span className="text-xs text-gray-400 flex-shrink-0 font-medium">
-          v{currentVersionNumber}
-        </span>
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-gray-100 font-sans text-gray-900 select-none">
+      {/* ── TOP HEADER / WORKSPACE BAR ── */}
+      <header className="flex h-12 shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4 z-40">
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => router.push("/documents")}
+            className="flex items-center gap-1 text-xs font-semibold text-gray-600 hover:text-gray-900 rounded p-1 hover:bg-gray-100"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Documents</span>
+          </button>
+          <div className="h-4 w-[1px] bg-gray-200" />
+          <h1 className="text-xs font-bold text-gray-800 truncate max-w-[200px] sm:max-w-xs">
+            {doc?.name || "PDF Document"}
+          </h1>
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-bold border border-blue-200">
+            v{currentVersionNumber}
+          </span>
+        </div>
 
-        <span className="h-5 w-px bg-gray-200 mx-1.5" />
-        <ToolButton
-          icon={Search}
-          label="Find & Replace"
-          active={panel === "find"}
-          onClick={() => setPanel(panel === "find" ? "none" : "find")}
-        />
-        <ToolButton
-          icon={PenLine}
-          label="Text Replace"
-          active={panel === "edit"}
-          onClick={() => setPanel(panel === "edit" ? "none" : "edit")}
-        />
-        <ToolButton
-          icon={Replace}
-          label="Pages"
-          active={panel === "pages"}
-          onClick={() => setPanel(panel === "pages" ? "none" : "pages")}
-        />
-        <ToolButton
-          icon={Shield}
-          label="Redact"
-          active={panel === "redact"}
-          onClick={() => setPanel(panel === "redact" ? "none" : "redact")}
-        />
-        <ToolButton icon={StickyNote} label="Note" onClick={addStickyNote} />
-        <ToolButton
-          icon={History}
-          label="History"
-          active={panel === "versions"}
-          onClick={() => setPanel(panel === "versions" ? "none" : "versions")}
-        />
-        <ToolButton
-          icon={Columns2}
-          label="Compare"
-          active={compare}
-          onClick={() => (compare ? setCompare(false) : openCompare())}
-        />
+        {/* Page Nav & Zoom Controls */}
+        <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1 bg-gray-50 border border-gray-200 rounded-md px-1 py-0.5 text-xs">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page <= 1}
+              className="p-1 hover:bg-gray-200 rounded disabled:opacity-30"
+              title="Previous Page"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+            <span className="font-semibold text-gray-700 px-1">
+              {page} / {totalPages || 1}
+            </span>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page >= totalPages}
+              className="p-1 hover:bg-gray-200 rounded disabled:opacity-30"
+              title="Next Page"
+            >
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
 
-        <div className="flex-1" />
+          <div className="flex items-center gap-1 bg-gray-50 border border-gray-200 rounded-md px-1.5 py-0.5 text-xs">
+            <button
+              onClick={() => setZoom((z) => Math.max(0.5, Math.round((z - 0.1) * 10) / 10))}
+              className="p-1 hover:bg-gray-200 rounded"
+              title="Zoom Out"
+            >
+              <ZoomOut className="w-3.5 h-3.5" />
+            </button>
+            <span className="font-semibold text-gray-700 w-10 text-center">
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              onClick={() => setZoom((z) => Math.min(3.0, Math.round((z + 0.1) * 10) / 10))}
+              className="p-1 hover:bg-gray-200 rounded"
+              title="Zoom In"
+            >
+              <ZoomIn className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
 
-        {hasUnsavedVisuals && (
+        {/* Save & Download Actions */}
+        <div className="flex items-center gap-2">
           <button
             onClick={saveVisualEdits}
             disabled={savingBake}
-            className="flex items-center gap-1 text-xs bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-3 py-1.5 rounded-lg shadow-sm transition-all"
-            title="Save your changes to an immutable version in storage"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold shadow-xs disabled:opacity-50"
           >
             {savingBake ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
             ) : (
               <Save className="w-3.5 h-3.5" />
             )}
-            <span>Save Edits</span>
+            <span>Save</span>
           </button>
-        )}
+          <button
+            onClick={exportPdf}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-900 hover:bg-black text-white rounded-lg text-xs font-semibold shadow-xs"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Download</span>
+          </button>
+        </div>
+      </header>
 
-        <button
-          onClick={() => setZoom((z) => Math.max(0.4, +(z - 0.2).toFixed(2)))}
-          className="p-1.5 rounded hover:bg-gray-100 text-gray-500"
-          title="Zoom out"
-        >
-          <ZoomOut size={16} />
-        </button>
-        <span className="text-xs text-gray-600 font-medium w-11 text-center">
-          {Math.round(zoom * 100)}%
-        </span>
-        <button
-          onClick={() => setZoom((z) => Math.min(3, +(z + 0.2).toFixed(2)))}
-          className="p-1.5 rounded hover:bg-gray-100 text-gray-500"
-          title="Zoom in"
-        >
-          <ZoomIn size={16} />
-        </button>
-        <button
-          onClick={() => {
-            const el = viewerScrollRef.current;
-            if (!el) return;
-            setZoom(+Math.max(0.4, (el.clientWidth - 60) / 612).toFixed(2));
-          }}
-          className="p-1.5 rounded hover:bg-gray-100 text-gray-500"
-          title="Fit width"
-        >
-          <Maximize2 size={15} />
-        </button>
-        <span className="h-5 w-px bg-gray-200 mx-1.5" />
-        <button
-          onClick={() => setPanel(panel === "ai" ? "none" : "ai")}
-          className={`text-xs px-2.5 py-1.5 rounded-lg font-semibold flex items-center gap-1.5 transition-colors ${
-            panel === "ai"
-              ? "bg-purple-600 text-white shadow-xs"
-              : "text-purple-700 bg-purple-50 hover:bg-purple-100"
-          }`}
-        >
-          ✦ AI Copilot
-        </button>
-        <button
-          onClick={exportPdf}
-          className="text-xs bg-gray-900 text-white font-medium px-3 py-1.5 rounded-lg hover:bg-gray-800 flex items-center gap-1 shadow-xs"
-        >
-          <Download size={13} /> Export
-        </button>
-      </div>
-
-      {/* ── MS WORD RIBBON TOOLBAR ── */}
+      {/* ── MS WORD-STYLE RIBBON TOOLBAR ── */}
       <EditorRibbon
         activeTool={activeTool}
         setActiveTool={setActiveTool}
-        selectedTextElement={selectedTextObj}
-        onUpdateSelectedText={handleUpdateSelectedText}
-        onAddText={() => handleAddText()}
-        onAddImage={handleAddImage}
-        onAddWhiteout={() => handleAddWhiteout()}
-        onAddStamp={handleAddStamp}
-        onAddSignature={handleAddImage}
-        onOpenAI={() => setPanel("ai")}
-        onQuickAiPrompt={(p) => {
-          setPanel("ai");
-          setExternalAiPrompt(p);
+        selectedTextElement={selectedTextEl}
+        onUpdateSelectedText={(updates) => {
+          if (selectedElementId && selectedElementType === "text") {
+            handleUpdateText(selectedElementId, updates);
+          }
         }}
-        canUndo={historyStack.length > 0}
-        canRedo={redoStack.length > 0}
+        onAddText={handleAddText}
+        onAddImage={handleAddImage}
+        onAddShape={handleAddShape}
+        onAddRedaction={handleAddRedaction}
+        onAddWhiteout={handleAddWhiteout}
+        onAddStamp={handleAddStamp}
+        onAddSignature={(dataUrl) => handleAddImage(dataUrl, 140, 60)}
+        onOpenAI={() => setPanel("ai")}
+        onQuickAiPrompt={(prompt) => {
+          setExternalAiPrompt(prompt);
+          setPanel("ai");
+        }}
+        canUndo={canUndo}
+        canRedo={canRedo}
         onUndo={handleUndo}
         onRedo={handleRedo}
-        onDeleteSelected={handleDeleteSelected}
-        hasSelection={Boolean(selectedElementId)}
+        onDeleteSelected={() => {
+          if (selectedElementId) handleDeleteElement(selectedElementId);
+        }}
+        hasSelection={!!selectedElementId}
       />
 
-      {(busy || savingBake) && (
-        <div className="h-0.5 bg-blue-600 animate-pulse flex-shrink-0" />
-      )}
-
-      {/* ── MAIN WORKSPACE BODY ── */}
-      <div className="flex-1 flex min-h-0">
-        {/* Left thumbnails */}
-        {leftOpen && (
-          <div className="w-36 bg-white border-r border-gray-200 overflow-y-auto flex-shrink-0 p-2 space-y-2">
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map((n) => (
-              <button
-                key={n}
-                onClick={() => setPage(n)}
-                className={`w-full aspect-[3/4] rounded-lg border-2 flex flex-col items-center justify-center text-xs font-semibold transition-colors ${
-                  page === n
-                    ? "border-blue-600 bg-blue-50/50 text-blue-900 shadow-xs"
-                    : "border-gray-200 bg-gray-50 text-gray-500 hover:border-gray-300"
-                }`}
-              >
-                <span>Page</span>
-                <span className="text-base font-bold">{n}</span>
-              </button>
-            ))}
+      {/* ── MAIN WORKSPACE AREA ── */}
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* Left Thumbnails / Pages Panel */}
+        <aside className="w-44 shrink-0 border-r border-gray-200 bg-white overflow-y-auto hidden md:flex flex-col p-3 gap-3">
+          <span className="text-[11px] font-bold text-gray-500 uppercase tracking-wider">
+            Pages ({totalPages || 1})
+          </span>
+          <div className="space-y-2.5">
+            {Array.from({ length: totalPages || 1 }, (_, idx) => {
+              const pNum = idx + 1;
+              const isCurrent = pNum === page;
+              return (
+                <button
+                  key={pNum}
+                  onClick={() => setPage(pNum)}
+                  className={`w-full p-2 rounded-lg border text-left flex flex-col items-center gap-1 transition-all ${
+                    isCurrent
+                      ? "border-blue-600 bg-blue-50/60 shadow-xs"
+                      : "border-gray-200 hover:border-gray-300 bg-gray-50/40"
+                  }`}
+                >
+                  <div className="w-full aspect-3/4 bg-white border border-gray-200 shadow-2xs rounded-sm flex items-center justify-center text-gray-400 text-xs font-bold">
+                    P. {pNum}
+                  </div>
+                  <span className={`text-[10px] font-semibold ${isCurrent ? "text-blue-700" : "text-gray-600"}`}>
+                    Page {pNum}
+                  </span>
+                </button>
+              );
+            })}
           </div>
-        )}
+        </aside>
 
-        {/* Center Canvas Viewer */}
-        <div className="flex-1 flex flex-col min-w-0">
-          {compare ? (
-            <div className="flex-1 flex min-h-0">
-              <div className="w-1/2 border-r border-gray-200 overflow-auto bg-gray-200 relative">
-                <div className="sticky top-0 z-10 bg-gray-900 text-white text-xs px-3 py-1.5 font-bold">
-                  ORIGINAL (v1)
-                </div>
-                {compareOriginal && (
-                  <PDFViewer
-                    data={compareOriginal}
-                    page={page}
-                    zoom={zoom}
-                    activeTool="select"
-                    textElements={[]}
-                    imageElements={[]}
-                    whiteoutElements={[]}
-                    selectedElementId={null}
-                    onSelectElement={() => {}}
-                    onUpdateTextElement={() => {}}
-                    onUpdateImageElement={() => {}}
-                    onUpdateWhiteoutElement={() => {}}
-                    onDeleteElement={() => {}}
-                  />
-                )}
-              </div>
-              <div className="w-1/2 overflow-auto bg-gray-200 relative">
-                <div className="sticky top-0 z-10 bg-blue-600 text-white text-xs px-3 py-1.5 font-bold">
-                  EDITED (v{currentVersionNumber})
-                </div>
-                {pdfData && (
-                  <PDFViewer
-                    data={pdfData}
-                    page={page}
-                    zoom={zoom}
-                    activeTool="select"
-                    textElements={textElements}
-                    imageElements={imageElements}
-                    whiteoutElements={whiteoutElements}
-                    selectedElementId={selectedElementId}
-                    onSelectElement={(id, type) => {
-                      setSelectedElementId(id);
-                      setSelectedElementType(type || null);
-                    }}
-                    onUpdateTextElement={handleUpdateText}
-                    onUpdateImageElement={handleUpdateImage}
-                    onUpdateWhiteoutElement={handleUpdateWhiteout}
-                    onDeleteElement={handleDeleteSelected}
-                  />
-                )}
-              </div>
+        {/* Center Canvas Workspace */}
+        <main className="flex-1 overflow-auto bg-gray-200/80 relative" ref={viewerScrollRef}>
+          {loadingPdf ? (
+            <div className="flex h-full w-full items-center justify-center flex-col gap-2">
+              <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
+              <p className="text-xs font-semibold text-gray-600">Loading document...</p>
             </div>
           ) : (
-            <div ref={viewerScrollRef} className="flex-1 overflow-auto bg-gray-200/60">
-              {loadingPdf || !pdfData ? (
-                <div className="h-full flex items-center justify-center">
-                  <div className="text-center">
-                    <Loader2
-                      className="animate-spin mx-auto text-blue-600 mb-3"
-                      size={32}
-                    />
-                    <p className="text-sm font-medium text-gray-600">
-                      Loading PDF &amp; tools…
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <PDFViewer
-                  data={pdfData}
-                  page={page}
-                  zoom={zoom}
-                  activeTool={activeTool}
-                  textElements={textElements}
-                  imageElements={imageElements}
-                  whiteoutElements={whiteoutElements}
-                  selectedElementId={selectedElementId}
-                  onSelectElement={(id, type) => {
-                    setSelectedElementId(id);
-                    setSelectedElementType(type || null);
-                  }}
-                  onUpdateTextElement={handleUpdateText}
-                  onUpdateImageElement={handleUpdateImage}
-                  onUpdateWhiteoutElement={handleUpdateWhiteout}
-                  onDeleteElement={handleDeleteSelected}
-                  onCanvasClickAdd={(clickX, clickY) => {
-                    if (activeTool === "text") handleAddText(clickX, clickY);
-                    if (activeTool === "whiteout") handleAddWhiteout(clickX, clickY);
-                  }}
-                  onPageCount={setTotalPages}
-                  onSelectText={(sel) => {
-                    setSelection(sel);
-                    setSelectedText(sel.text);
-                  }}
-                />
-              )}
-            </div>
+            <PDFViewer
+              data={pdfData}
+              page={page}
+              zoom={zoom}
+              activeTool={activeTool}
+              pageModel={currentPageModel}
+              selectedElementId={selectedElementId}
+              selectedElementType={selectedElementType}
+              onSelectElement={(id, type) => {
+                setSelectedElementId(id);
+                setSelectedElementType(type || null);
+              }}
+              onUpdateTextElement={handleUpdateText}
+              onUpdateImageElement={handleUpdateImage}
+              onUpdateShapeElement={handleUpdateShape}
+              onUpdateRedactionElement={handleUpdateRedaction}
+              onDeleteElement={handleDeleteElement}
+              onDuplicateElement={handleDuplicateElement}
+              onCanvasClickAdd={(x, y) => {
+                if (activeTool === "text") handleAddText(x, y);
+                else if (activeTool === "whiteout") handleAddWhiteout(x, y);
+                else if (activeTool === "redact") handleAddRedaction();
+                else if (activeTool === "shape_rect") handleAddShape("rectangle");
+                else if (activeTool === "shape_circle") handleAddShape("circle");
+                else if (activeTool === "shape_line") handleAddShape("line");
+                else if (activeTool === "highlight") handleAddShape("highlight");
+              }}
+              onPageCount={handlePageCount}
+              onPageExtracted={handlePageExtracted}
+              onSelectText={(sel) => {
+                setSelection(sel);
+                setSelectedText(sel.text);
+              }}
+            />
           )}
+        </main>
 
-          {/* Page Footer Navigation */}
-          <div className="h-9 bg-white border-t border-gray-200 flex items-center justify-center gap-3 text-xs text-gray-600 flex-shrink-0">
-            <button
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page <= 1}
-              className="px-2 py-0.5 rounded hover:bg-gray-100 disabled:opacity-30 font-medium"
-            >
-              ‹ Prev
-            </button>
-            <span className="font-semibold text-gray-800">
-              Page {page} of {totalPages || "…"}
-              {activeVersion?.operation_type && (
-                <span className="text-gray-400 font-normal">
-                  {" "}
-                  · {activeVersion.operation_type}
-                </span>
-              )}
-            </span>
-            <button
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              disabled={page >= totalPages}
-              className="px-2 py-0.5 rounded hover:bg-gray-100 disabled:opacity-30 font-medium"
-            >
-              Next ›
-            </button>
-            <button
-              onClick={() => setLeftOpen((v) => !v)}
-              className="p-1 rounded hover:bg-gray-100"
-              title="Toggle page panel"
-            >
-              <PanelLeft size={14} />
-            </button>
-          </div>
-        </div>
-
-        {/* ── RIGHT PANEL (AI COPILOT / SIDEBAR PANELS) ── */}
+        {/* Right Tool Panels (AI Copilot / Find & Replace / Redact / Versions) */}
         {panel !== "none" && (
-          <div className="w-80 bg-white border-l border-gray-200 overflow-y-auto flex-shrink-0 flex flex-col shadow-xs">
-            <div className="flex items-center justify-end px-2 pt-2">
+          <aside className="w-80 shrink-0 border-l border-gray-200 bg-white flex flex-col z-30 shadow-lg">
+            <div className="flex items-center justify-between border-b border-gray-100 px-3 py-2">
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPanel("ai")}
+                  className={`px-2 py-1 rounded text-xs font-semibold ${
+                    panel === "ai" ? "bg-purple-100 text-purple-800" : "text-gray-600 hover:bg-gray-100"
+                  }`}
+                >
+                  AI Copilot
+                </button>
+                <button
+                  onClick={() => setPanel("find")}
+                  className={`px-2 py-1 rounded text-xs font-semibold ${
+                    panel === "find" ? "bg-blue-100 text-blue-800" : "text-gray-600 hover:bg-gray-100"
+                  }`}
+                >
+                  Find
+                </button>
+                <button
+                  onClick={() => setPanel("versions")}
+                  className={`px-2 py-1 rounded text-xs font-semibold ${
+                    panel === "versions" ? "bg-amber-100 text-amber-800" : "text-gray-600 hover:bg-gray-100"
+                  }`}
+                >
+                  History
+                </button>
+              </div>
               <button
                 onClick={() => setPanel("none")}
-                className="p-1 rounded hover:bg-gray-100 text-gray-400"
-                title="Close panel"
+                className="text-gray-400 hover:text-gray-600 text-xs font-bold p-1"
               >
-                <PanelRight size={15} />
+                ✕
               </button>
             </div>
-            <div className="flex-1 min-h-0 flex flex-col">
+
+            <div className="flex-1 overflow-y-auto p-3">
               {panel === "ai" && (
                 <AIPanel
                   documentId={documentId}
-                  selectedText={selectedText}
                   currentPage={page}
-                  externalPrompt={externalAiPrompt}
+                  selectedText={selectedText}
                   onApplied={() => {
-                    loadPdf();
-                    loadDoc();
+                    void loadPdf();
+                    void loadDoc();
                   }}
-                  onFindMatches={(find) => {
-                    doFind(find, "document").then((found) => {
-                      if (found.length > 0) setPage(found[0].page_number + 1);
-                      showToast(
-                        `${found.length} match(es) highlighted in the match list`
-                      );
-                    });
+                  onFindMatches={(_findText: string) => {
+                    setPanel("find");
                   }}
+                  externalPrompt={externalAiPrompt}
                 />
               )}
               {panel === "find" && (
                 <FindReplacePanel
-                  onFind={async (t, scope) => {
-                    await doFind(t, scope);
-                  }}
-                  onPreview={doPreview}
-                  onReplaceAll={doReplaceAll}
                   matches={matches}
-                  currentPage={page - 1}
+                  currentPage={page}
                   busy={busy}
-                />
-              )}
-              {panel === "edit" && (
-                <TextEditPanel
-                  selection={
-                    selection
-                      ? {
-                          match_id: -1,
-                          matched_text: selection.text,
-                          page_number: selection.page,
-                          bounding_box: [0, 0, 0, 0],
-                          font_name: "selection",
-                          font_size: null,
-                        }
-                      : null
-                  }
-                  onPreview={doTextPreview}
-                  onApply={doTextApply}
-                  busy={busy}
-                />
-              )}
-              {panel === "redact" && (
-                <RedactPanel
-                  selectedText={selectedText}
-                  currentPage={page - 1}
-                  onPreview={doRedactPreview}
-                  onApplyRegion={doRedactApply}
-                  busy={busy}
+                  onFind={async (text, scope) => {
+                    try {
+                      const res = await fetch(`/api/docs/${documentId}/engine`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          action: "find_text",
+                          search_text: text,
+                          page: scope === "page" ? page : undefined,
+                        }),
+                      });
+                      const data = await res.json();
+                      setMatches(data.matches || []);
+                    } catch {
+                      // ignore
+                    }
+                  }}
+                  onPreview={async (_find, _replace, _scope) => {
+                    return { count: matches.length, warnings: [] };
+                  }}
+                  onReplaceAll={async (find, replace, scope) => {
+                    const res = await fetch(`/api/docs/${documentId}/engine`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        action: "replace_text",
+                        search_text: find,
+                        replace_text: replace,
+                        page: scope === "page" ? page : undefined,
+                      }),
+                    });
+                    await loadPdf();
+                    await loadDoc();
+                    return res.json();
+                  }}
                 />
               )}
               {panel === "versions" && (
                 <VersionsPanel
                   versions={versions}
                   currentVersion={currentVersionNumber}
-                  onSelect={selectVersion}
-                  onCompare={openCompare}
-                />
-              )}
-              {panel === "pages" && (
-                <PagesPanel
-                  totalPages={totalPages}
-                  currentPage={page - 1}
-                  busy={busy}
-                  onRotate={(p, angle) =>
-                    pageOp(
-                      { action: "rotate_pages", pages: [p], angle },
-                      `Page rotated ${angle}°`
-                    )
-                  }
-                  onDelete={(p) =>
-                    pageOp({ action: "delete_pages", pages: [p] }, "Page deleted")
-                  }
-                  onDuplicate={(p) =>
-                    pageOp(
-                      { action: "duplicate_pages", pages: [p] },
-                      "Page duplicated"
-                    )
-                  }
-                  onInsertBlank={(at) =>
-                    pageOp(
-                      { action: "insert_blank", at },
-                      "Blank page inserted"
-                    )
-                  }
+                  onSelect={(v: Version) => {
+                    void loadPdf(v.version_number);
+                    setCurrentVersionNumber(v.version_number);
+                  }}
+                  onCompare={() => setCompare(!compare)}
                 />
               )}
             </div>
-          </div>
+          </aside>
         )}
       </div>
 
+      {/* Toast notification popup */}
       {toast && (
-        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-xs font-semibold px-4 py-2.5 rounded-xl shadow-2xl z-50 flex items-center gap-2 border border-gray-700 animate-in fade-in slide-in-from-bottom-2">
+        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2 rounded-lg bg-gray-900 px-4 py-2 text-xs font-medium text-white shadow-xl animate-in fade-in">
           <CheckCircle2 className="w-4 h-4 text-emerald-400" />
           <span>{toast}</span>
         </div>
       )}
     </div>
-  );
-}
-
-function ToolButton({
-  icon: Icon,
-  label,
-  active,
-  onClick,
-}: {
-  icon: React.ComponentType<{ size?: number; className?: string }>;
-  label: string;
-  active?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      title={label}
-      className={`hidden md:flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg font-medium transition-colors ${
-        active
-          ? "bg-blue-600 text-white shadow-xs"
-          : "text-gray-700 hover:bg-gray-100"
-      }`}
-    >
-      <Icon size={14} />
-      <span className="hidden lg:inline">{label}</span>
-    </button>
   );
 }

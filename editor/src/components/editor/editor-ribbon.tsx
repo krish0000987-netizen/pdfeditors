@@ -27,8 +27,13 @@ import {
   Building2,
   CreditCard,
   Layers,
+  Square,
+  Circle,
+  Minus,
+  Highlighter,
+  ShieldAlert,
 } from "lucide-react";
-import type { ActiveTool, CanvasTextElement } from "./types";
+import type { ActiveTool, CanvasTextElement, ShapeType } from "./types";
 
 const FONT_FAMILIES = [
   { label: "Helvetica / Arial", value: "Helvetica, Arial, sans-serif" },
@@ -81,6 +86,8 @@ export function EditorRibbon({
   onUpdateSelectedText,
   onAddText,
   onAddImage,
+  onAddShape,
+  onAddRedaction,
   onAddWhiteout,
   onAddStamp,
   onAddSignature,
@@ -99,6 +106,8 @@ export function EditorRibbon({
   onUpdateSelectedText: (updates: Partial<CanvasTextElement>) => void;
   onAddText: () => void;
   onAddImage: (dataUrl: string, width?: number, height?: number) => void;
+  onAddShape?: (type: ShapeType) => void;
+  onAddRedaction?: () => void;
   onAddWhiteout: () => void;
   onAddStamp: (title: string, color: string, bg: string) => void;
   onAddSignature: (dataUrl: string) => void;
@@ -253,85 +262,58 @@ export function EditorRibbon({
               : "hover:bg-gray-200/60 text-gray-700"
           }`}
         >
-          <Building2 className="w-3.5 h-3.5 text-blue-500" />
-          Bank &amp; Document Tools
+          <Building2 className="w-3.5 h-3.5 text-blue-600" />
+          <span>Bank Statement Tools</span>
         </button>
         <button
-          onClick={() => {
-            setActiveTab("ai");
-            onOpenAI();
-          }}
-          className={`px-3 py-1.5 rounded-t-md transition-colors flex items-center gap-1.5 ${
+          onClick={() => setActiveTab("ai")}
+          className={`px-3 py-1.5 rounded-t-md transition-colors flex items-center gap-1 ${
             activeTab === "ai"
               ? "bg-white text-purple-600 font-semibold border-t-2 border-purple-600 shadow-xs"
-              : "hover:bg-purple-50 text-purple-700 font-medium"
+              : "hover:bg-gray-200/60 text-purple-700"
           }`}
         >
-          <Sparkles className="w-3.5 h-3.5 text-purple-500" />
-          AI Copilot
+          <Sparkles className="w-3.5 h-3.5 text-purple-600" />
+          <span>AI Copilot</span>
         </button>
+      </div>
 
-        <div className="ml-auto flex items-center gap-1 pb-1">
+      {/* Ribbon Toolbar Actions */}
+      <div className="flex items-center px-4 py-2 gap-3 overflow-x-auto text-xs">
+        {/* Undo / Redo */}
+        <div className="flex items-center gap-0.5 pr-2 border-r border-gray-200">
           <button
             onClick={onUndo}
             disabled={!canUndo}
+            className="p-1.5 rounded hover:bg-gray-100 disabled:opacity-30 text-gray-700"
             title="Undo (Ctrl+Z)"
-            className="p-1 rounded hover:bg-gray-200 text-gray-600 disabled:opacity-35"
           >
             <Undo2 className="w-4 h-4" />
           </button>
           <button
             onClick={onRedo}
             disabled={!canRedo}
+            className="p-1.5 rounded hover:bg-gray-100 disabled:opacity-30 text-gray-700"
             title="Redo (Ctrl+Y)"
-            className="p-1 rounded hover:bg-gray-200 text-gray-600 disabled:opacity-35"
           >
             <Redo2 className="w-4 h-4" />
           </button>
           {hasSelection && (
             <button
               onClick={onDeleteSelected}
-              title="Delete Element (Delete)"
-              className="p-1 rounded hover:bg-red-50 text-red-600"
+              className="p-1.5 rounded hover:bg-red-50 text-red-600"
+              title="Delete Selected (Del)"
             >
               <Trash2 className="w-4 h-4" />
             </button>
           )}
         </div>
-      </div>
 
-      {/* Ribbon Command Strip */}
-      <div className="px-4 py-2 flex items-center gap-3 overflow-x-auto text-xs min-h-[52px]">
-        {/* ── HOME TAB: MS WORD TYPOGRAPHY & FORMATTING ── */}
+        {/* ── HOME TAB: TYPOGRAPHY & WORD FORMATTING ── */}
         {activeTab === "home" && (
           <>
-            {/* Direct Tool Activator */}
-            <div className="flex items-center gap-1 pr-3 border-r border-gray-200">
-              <button
-                onClick={onAddText}
-                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md font-medium text-xs transition-colors ${
-                  activeTool === "text"
-                    ? "bg-blue-600 text-white shadow-xs"
-                    : "bg-blue-50 text-blue-700 hover:bg-blue-100"
-                }`}
-                title="Click anywhere on PDF to type"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>Text Box</span>
-              </button>
-              <button
-                onClick={onAddWhiteout}
-                className={`p-1.5 rounded-md text-gray-700 transition-colors ${
-                  activeTool === "whiteout" ? "bg-gray-900 text-white" : "hover:bg-gray-100"
-                }`}
-                title="Whiteout / Cover Area"
-              >
-                <Eraser className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Font Family Dropdown */}
-            <div className="flex items-center gap-1">
+            {/* Font Family */}
+            <div className="flex items-center gap-1.5">
               <select
                 value={fontFam}
                 onChange={(e) => onUpdateSelectedText({ fontFamily: e.target.value })}
@@ -345,7 +327,7 @@ export function EditorRibbon({
                 ))}
               </select>
 
-              {/* Font Size Dropdown */}
+              {/* Font Size */}
               <select
                 value={fontSize}
                 onChange={(e) => onUpdateSelectedText({ fontSize: Number(e.target.value) })}
@@ -491,12 +473,12 @@ export function EditorRibbon({
           </>
         )}
 
-        {/* ── INSERT TAB: IMAGES, STAMPS, SIGNATURES, SHAPES ── */}
+        {/* ── INSERT TAB: IMAGES, STAMPS, SIGNATURES, SHAPES, REDACTIONS ── */}
         {activeTab === "insert" && (
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             <button
               onClick={onAddText}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-800 font-medium"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-800 font-medium"
             >
               <Type className="w-4 h-4 text-blue-600" />
               <span>Text Box</span>
@@ -504,15 +486,56 @@ export function EditorRibbon({
 
             <button
               onClick={() => fileInputRef.current?.click()}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-800 font-medium"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-800 font-medium"
             >
               <ImageIcon className="w-4 h-4 text-emerald-600" />
-              <span>Insert Image / Logo</span>
+              <span>Insert Image</span>
+            </button>
+
+            {/* Shapes */}
+            <div className="flex items-center gap-1 px-1.5 py-1 border-x border-gray-200">
+              <button
+                onClick={() => onAddShape?.("rectangle")}
+                className="p-1 rounded hover:bg-gray-100 text-gray-700"
+                title="Rectangle"
+              >
+                <Square className="w-3.5 h-3.5 text-blue-600" />
+              </button>
+              <button
+                onClick={() => onAddShape?.("circle")}
+                className="p-1 rounded hover:bg-gray-100 text-gray-700"
+                title="Circle"
+              >
+                <Circle className="w-3.5 h-3.5 text-purple-600" />
+              </button>
+              <button
+                onClick={() => onAddShape?.("line")}
+                className="p-1 rounded hover:bg-gray-100 text-gray-700"
+                title="Line"
+              >
+                <Minus className="w-3.5 h-3.5 text-gray-800" />
+              </button>
+              <button
+                onClick={() => onAddShape?.("highlight")}
+                className="p-1 rounded hover:bg-gray-100 text-gray-700"
+                title="Highlight Shape"
+              >
+                <Highlighter className="w-3.5 h-3.5 text-amber-500" />
+              </button>
+            </div>
+
+            <button
+              onClick={onAddRedaction}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-red-200 bg-red-50 hover:bg-red-100 text-red-800 font-medium"
+              title="Redact sensitive area"
+            >
+              <ShieldAlert className="w-4 h-4 text-red-600" />
+              <span>Redaction</span>
             </button>
 
             <button
               onClick={() => setShowSignatureModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-800 font-medium"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-800 font-medium"
             >
               <PenTool className="w-4 h-4 text-indigo-600" />
               <span>Signature</span>
@@ -520,18 +543,18 @@ export function EditorRibbon({
 
             <button
               onClick={() => setShowStampModal(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-800 font-medium"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-800 font-medium"
             >
               <Stamp className="w-4 h-4 text-amber-600" />
-              <span>Bank / Approval Stamp</span>
+              <span>Stamp</span>
             </button>
 
             <button
               onClick={onAddWhiteout}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-800 font-medium"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-800 font-medium"
             >
               <Eraser className="w-4 h-4 text-rose-600" />
-              <span>Whiteout Box</span>
+              <span>Whiteout</span>
             </button>
           </div>
         )}

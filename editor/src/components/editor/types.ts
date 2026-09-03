@@ -1,3 +1,21 @@
+export type {
+  ElementSource,
+  BoundingBox,
+  TextStyle,
+  TextElement,
+  ImageElement,
+  ShapeType,
+  ShapeElement,
+  RedactionElement,
+  PageModel,
+  DocumentModel,
+} from "@/lib/pdf/document-model";
+
+import type {
+  TextElement as DocTextElement,
+  ImageElement as DocImageElement,
+} from "@/lib/pdf/document-model";
+
 export type Match = {
   match_id: number;
   matched_text: string;
@@ -36,40 +54,10 @@ export type EditorDocument = {
   original_file_path: string;
 };
 
-export interface CanvasTextElement {
-  id: string;
-  page: number; // 0-indexed
-  x: number; // in PDF points
-  y: number; // in PDF points from top
-  width: number;
-  height: number;
-  text: string;
-  fontFamily: string;
-  fontSize: number;
-  fontWeight: "normal" | "bold";
-  fontStyle: "normal" | "italic";
-  underline: boolean;
-  color: string; // hex #rrggbb
-  backgroundColor: string; // hex or transparent
-  textAlign: "left" | "center" | "right";
-  opacity: number;
-}
-
-export interface CanvasImageElement {
-  id: string;
-  page: number;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  dataUrl: string;
-  mimeType?: string;
-  title?: string;
-  opacity: number;
-  rotation: number;
-}
-
-export interface CanvasWhiteoutElement {
+// Aliases for compatibility
+export type CanvasTextElement = DocTextElement;
+export type CanvasImageElement = DocImageElement;
+export type CanvasWhiteoutElement = {
   id: string;
   page: number;
   x: number;
@@ -77,15 +65,19 @@ export interface CanvasWhiteoutElement {
   width: number;
   height: number;
   color: string;
-}
+};
 
 export type ActiveTool =
   | "select"
   | "text"
   | "image"
+  | "shape_rect"
+  | "shape_circle"
+  | "shape_line"
+  | "shape_arrow"
   | "stamp"
   | "whiteout"
   | "signature"
-  | "edit_text"
+  | "highlight"
   | "redact"
   | "find";
