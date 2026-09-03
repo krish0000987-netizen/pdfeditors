@@ -4,12 +4,13 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 const SUGGESTIONS = [
-  "Find all occurrences of this text",
-  "Find all dates",
-  "Summarize this document",
-  "Highlight all amounts",
-  "Add a review note",
-  "Find spelling mistakes",
+  "Find all dates & update period",
+  "Format and prefix amounts ($ / ₹ / €)",
+  "Mask account numbers (e.g. XXXX-1234)",
+  "Summarize key balances and totals",
+  "Find and fix spelling mistakes",
+  "Add verified bank stamp",
+  "Redact all sensitive PII",
 ];
 
 type Proposal = {
@@ -40,12 +41,14 @@ export function AIPanel({
   currentPage,
   onApplied,
   onFindMatches,
+  externalPrompt,
 }: {
   documentId: string;
   selectedText: string;
   currentPage: number;
   onApplied: () => void;
   onFindMatches: (find: string) => void;
+  externalPrompt?: string | null;
 }) {
   const [messages, setMessages] = useState<Message[]>([
     { role: "system", content: "What would you like to do with this PDF?" },
@@ -71,6 +74,12 @@ export function AIPanel({
   }, []);
 
   useEffect(() => {
+    if (externalPrompt) {
+      send(externalPrompt);
+    }
+  }, [externalPrompt]);
+
+  useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
@@ -82,6 +91,10 @@ export function AIPanel({
     setLoading(true);
     setLastFailedPrompt(null);
 
+    // Smart context resolution: fallback to 'page' if selectedText is empty
+    const resolvedContext =
+      context === "selected" && !selectedText ? "page" : context;
+
     try {
       const res = await fetch("/api/ai/chat", {
         method: "POST",
@@ -89,9 +102,9 @@ export function AIPanel({
         body: JSON.stringify({
           prompt,
           documentId,
-          context,
-          pages: context === "page" ? [currentPage] : undefined,
-          selectedText: context === "selected" ? selectedText : undefined,
+          context: resolvedContext,
+          pages: [currentPage - 1],
+          selectedText: selectedText || undefined,
           providerId: activeProviderId ?? undefined,
         }),
       });

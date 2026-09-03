@@ -35,3 +35,57 @@ export type EditorDocument = {
   is_favorite: boolean;
   original_file_path: string;
 };
+
+export interface CanvasTextElement {
+  id: string;
+  page: number; // 0-indexed
+  x: number; // in PDF points
+  y: number; // in PDF points from top
+  width: number;
+  height: number;
+  text: string;
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: "normal" | "bold";
+  fontStyle: "normal" | "italic";
+  underline: boolean;
+  color: string; // hex #rrggbb
+  backgroundColor: string; // hex or transparent
+  textAlign: "left" | "center" | "right";
+  opacity: number;
+}
+
+export interface CanvasImageElement {
+  id: string;
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dataUrl: string;
+  mimeType?: string;
+  title?: string;
+  opacity: number;
+  rotation: number;
+}
+
+export interface CanvasWhiteoutElement {
+  id: string;
+  page: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+}
+
+export type ActiveTool =
+  | "select"
+  | "text"
+  | "image"
+  | "stamp"
+  | "whiteout"
+  | "signature"
+  | "edit_text"
+  | "redact"
+  | "find";
