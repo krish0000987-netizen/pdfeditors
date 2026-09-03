@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 export async function GET() {
   const supabase = await createClient();
@@ -8,31 +9,33 @@ export async function GET() {
   } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  const admin = createAdminClient();
+
   const [
     { count: totalDocs },
     { data: pagesData },
     { count: aiOps },
     { data: versionCounts },
   ] = await Promise.all([
-    supabase
+    admin
       .from("documents")
       .select("id", { count: "exact", head: true })
       .eq("owner_id", user.id)
       .is("deleted_at", null),
-    supabase.from("documents").select("page_count").eq("owner_id", user.id).is("deleted_at", null),
-    supabase
+    admin.from("documents").select("page_count").eq("owner_id", user.id).is("deleted_at", null),
+    admin
       .from("ai_requests")
       .select("id", { count: "exact", head: true })
       .eq("user_id", user.id),
     // versions beyond the original → "edited" documents
-    supabase
+    admin
       .from("document_versions")
       .select("document_id, version_number")
       .gt("version_number", 1),
   ]);
 
   const ownedIds = new Set(
-    (await supabase.from("documents").select("id").eq("owner_id", user.id)).data?.map((d) => d.id) ?? []
+    (await admin.from("documents").select("id").eq("owner_id", user.id)).data?.map((d) => d.id) ?? []
   );
   const editedDocs = new Set(
     (versionCounts ?? [])

@@ -66,7 +66,7 @@ export async function POST(request: Request) {
       .upload(storagePath, bytes, { contentType: "application/pdf" });
     if (upErr) throw new Error(upErr.message);
 
-    const { data: doc, error: docErr } = await supabase
+    const { data: doc, error: docErr } = await admin
       .from("documents")
       .insert({
         id: docId,
@@ -83,7 +83,7 @@ export async function POST(request: Request) {
       .single();
     if (docErr) throw new Error(docErr.message);
 
-    await createVersion(supabase, {
+    await createVersion(admin, {
       documentId: docId,
       userId: user.id,
       filePath: storagePath,

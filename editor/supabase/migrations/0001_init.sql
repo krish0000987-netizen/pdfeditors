@@ -34,6 +34,20 @@ create table if not exists public.profiles (
 
 alter table public.profiles enable row level security;
 
+-- Security definer helper to check admin role without recursive RLS trigger
+create or replace function public.is_admin()
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1 from public.profiles
+    where id = auth.uid() and role = 'admin'
+  );
+$$;
+
 create policy "profiles_select_own" on public.profiles
   for select using (auth.uid() = id);
 create policy "profiles_update_own" on public.profiles
@@ -43,10 +57,7 @@ create policy "profiles_insert_self" on public.profiles
 -- Admins may read all profiles (user management). Updates of OTHER profiles
 -- go through the service role (server-side admin API) only.
 create policy "profiles_admin_read" on public.profiles
-  for select using (
-    exists (select 1 from public.profiles p
-            where p.id = auth.uid() and p.role = 'admin')
-  );
+  for select using (public.is_admin());
 
 -- Auto-create profile on signup
 create or replace function public.handle_new_user()
@@ -103,10 +114,7 @@ alter table public.documents enable row level security;
 create policy "documents_owner_all" on public.documents
   for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
 create policy "documents_admin_read" on public.documents
-  for select using (
-    exists (select 1 from public.profiles p
-            where p.id = auth.uid() and p.role = 'admin')
-  );
+  for select using (public.is_admin());
 
 -- ============ DOCUMENT_FOLDERS ============
 create table if not exists public.document_folders (

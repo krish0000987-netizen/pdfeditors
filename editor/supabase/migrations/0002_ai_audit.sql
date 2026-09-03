@@ -20,10 +20,7 @@ alter table public.ai_requests enable row level security;
 create policy "ai_requests_owner_all" on public.ai_requests
   for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "ai_requests_admin_read" on public.ai_requests
-  for select using (
-    exists (select 1 from public.profiles p
-            where p.id = auth.uid() and p.role = 'admin')
-  );
+  for select using (public.is_admin());
 
 -- ============ AI OPERATIONS ============
 create table if not exists public.ai_operations (
@@ -63,10 +60,7 @@ alter table public.audit_logs enable row level security;
 create policy "audit_logs_owner_read" on public.audit_logs
   for select using (auth.uid() = user_id);
 create policy "audit_logs_admin_read" on public.audit_logs
-  for select using (
-    exists (select 1 from public.profiles p
-            where p.id = auth.uid() and p.role = 'admin')
-  );
+  for select using (public.is_admin());
 
 -- ============ AI PROVIDERS (user-configured; API keys encrypted server-side) ============
 create table if not exists public.ai_providers (

@@ -14,8 +14,9 @@ export async function GET(
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { documentId } = await params;
+  const admin = createAdminClient();
 
-  const { data: doc, error } = await supabase
+  const { data: doc, error } = await admin
     .from("documents")
     .select("*")
     .eq("id", documentId)
@@ -24,12 +25,12 @@ export async function GET(
   if (error || !doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const [{ data: versions }, { data: annotations }] = await Promise.all([
-    supabase
+    admin
       .from("document_versions")
       .select("*")
       .eq("document_id", documentId)
       .order("version_number", { ascending: true }),
-    supabase
+    admin
       .from("annotations")
       .select("*")
       .eq("document_id", documentId)
@@ -70,7 +71,8 @@ export async function PATCH(
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
   }
 
-  const { data, error } = await supabase
+  const admin = createAdminClient();
+  const { data, error } = await admin
     .from("documents")
     .update(updates)
     .eq("id", documentId)
@@ -94,8 +96,9 @@ export async function POST(
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { documentId } = await params;
+  const admin = createAdminClient();
 
-  const { data: doc } = await supabase
+  const { data: doc } = await admin
     .from("documents")
     .select("*")
     .eq("id", documentId)
@@ -103,7 +106,7 @@ export async function POST(
     .single();
   if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const { data: latestVersion } = await supabase
+  const { data: latestVersion } = await admin
     .from("document_versions")
     .select("file_path, page_count, file_size")
     .eq("document_id", documentId)
@@ -113,7 +116,6 @@ export async function POST(
   if (!latestVersion) return NextResponse.json({ error: "No file to duplicate" }, { status: 400 });
 
   try {
-    const admin = createAdminClient();
     const { data: blob } = await admin.storage.from("documents").download(latestVersion.file_path);
     if (!blob) throw new Error("Source file missing");
 
@@ -127,7 +129,7 @@ export async function POST(
       .upload(newPath, bytes, { contentType: "application/pdf" });
     if (upErr) throw new Error(upErr.message);
 
-    const { data: copy, error: insErr } = await supabase
+    const { data: copy, error: insErr } = await admin
       .from("documents")
       .insert({
         id: newId,
@@ -144,7 +146,7 @@ export async function POST(
       .single();
     if (insErr) throw new Error(insErr.message);
 
-    await createVersion(supabase, {
+    await createVersion(admin, {
       documentId: newId,
       userId: user.id,
       filePath: newPath,
@@ -182,9 +184,10 @@ export async function DELETE(
 
   const { documentId } = await params;
   const action = new URL(request.url).searchParams.get("action") || "trash";
+  const admin = createAdminClient();
 
   if (action === "restore") {
-    const { error } = await supabase
+    const { error } = await admin
       .from("documents")
       .update({ deleted_at: null })
       .eq("id", documentId)
@@ -196,12 +199,12 @@ export async function DELETE(
 
   if (action === "purge") {
     // gather storage paths to remove
-    const { data: versions } = await supabase
+    const { data: versions } = await admin
       .from("document_versions")
       .select("file_path")
       .eq("document_id", documentId);
 
-    const { error: delError } = await supabase
+    const { error: delError } = await admin
       .from("documents")
       .delete()
       .eq("id", documentId)
@@ -209,7 +212,6 @@ export async function DELETE(
     if (delError) return NextResponse.json({ error: delError.message }, { status: 400 });
 
     if (versions?.length) {
-      const admin = createAdminClient();
       await admin.storage
         .from("documents")
         .remove(versions.map((v) => v.file_path));
@@ -220,7 +222,7 @@ export async function DELETE(
   }
 
   // default: move to trash
-  const { error } = await supabase
+  const { error } = await admin
     .from("documents")
     .update({ deleted_at: new Date().toISOString() })
     .eq("id", documentId)

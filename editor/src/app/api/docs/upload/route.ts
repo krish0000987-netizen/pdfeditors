@@ -86,7 +86,7 @@ export async function POST(request: Request) {
     if (uploadError) throw new Error(`Storage upload failed: ${uploadError.message}`);
 
     const allowedTypes = ["general", "bank_statement", "invoice", "contract", "form", "other"];
-    const { data: doc, error: docError } = await supabase
+    const { data: doc, error: docError } = await admin
       .from("documents")
       .insert({
         id: docId,
@@ -104,7 +104,7 @@ export async function POST(request: Request) {
     if (docError) throw new Error(docError.message);
 
     // Original is immutable version 1
-    const { error: vError } = await supabase.from("document_versions").insert({
+    const { error: vError } = await admin.from("document_versions").insert({
       document_id: docId,
       version_number: 1,
       file_path: storagePath,

@@ -23,8 +23,10 @@ export async function GET(
   const versionParam = url.searchParams.get("version");
   const asDownload = url.searchParams.get("download") === "1";
 
+  const admin = createAdminClient();
+
   // Ownership check
-  const { data: doc } = await supabase
+  const { data: doc } = await admin
     .from("documents")
     .select("name, owner_id")
     .eq("id", documentId)
@@ -35,7 +37,7 @@ export async function GET(
   // Resolve the version path
   let filePath: string | null = null;
   if (versionParam) {
-    const { data: version } = await supabase
+    const { data: version } = await admin
       .from("document_versions")
       .select("file_path")
       .eq("document_id", documentId)
@@ -43,7 +45,7 @@ export async function GET(
       .single();
     filePath = version?.file_path ?? null;
   } else {
-    const { data: version } = await supabase
+    const { data: version } = await admin
       .from("document_versions")
       .select("file_path")
       .eq("document_id", documentId)
@@ -54,7 +56,6 @@ export async function GET(
   }
   if (!filePath) return NextResponse.json({ error: "No file for this document" }, { status: 404 });
 
-  const admin = createAdminClient();
   const { data, error } = await admin.storage.from("documents").download(filePath);
   if (error || !data) {
     return NextResponse.json({ error: "File missing from storage" }, { status: 404 });

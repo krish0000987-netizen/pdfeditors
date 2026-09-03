@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 export async function GET(
   _request: Request,
@@ -12,8 +13,9 @@ export async function GET(
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { documentId } = await params;
+  const admin = createAdminClient();
 
-  const { data: doc } = await supabase
+  const { data: doc } = await admin
     .from("documents")
     .select("id")
     .eq("id", documentId)
@@ -21,7 +23,7 @@ export async function GET(
     .single();
   if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const { data: versions, error } = await supabase
+  const { data: versions, error } = await admin
     .from("document_versions")
     .select("*")
     .eq("document_id", documentId)
