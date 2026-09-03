@@ -342,22 +342,19 @@ export async function getActiveProvider(userId: string): Promise<ResolvedProvide
   }
 
   // Environment fallback (server-side only)
-  const baseUrl = process.env.AI_BASE_URL || "";
+  const baseUrl = process.env.AI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta";
   const apiKey = process.env.AI_API_KEY || "";
-  const model = process.env.AI_MODEL || "";
-  if (!baseUrl || !apiKey || !model) {
-    throw new AIProviderError(
-      "No AI provider configured. Add one in Settings → AI or set AI_BASE_URL / AI_API_KEY / AI_MODEL.",
-      "invalid_base_url"
-    );
-  }
+  const model =
+    process.env.AI_MODEL || process.env.AI_DEFAULT_MODEL || "gemini-3.6-flash";
+
   const providerType = (
     process.env.AI_DEFAULT_PROVIDER ||
     (baseUrl.includes("generativelanguage.googleapis.com") ? "gemini_compatible" : "openai_compatible")
   ) as ProviderType;
+
   return {
     id: "env",
-    name: "Environment default",
+    name: "Gemini Flash (System Default)",
     providerType,
     baseUrl,
     apiKey,
@@ -369,27 +366,39 @@ export async function getActiveProvider(userId: string): Promise<ResolvedProvide
   };
 }
 
-export async function getProviderById(userId: string, providerId: string): Promise<ResolvedProvider> {
-  const admin = createAdminClient();
-  const { data: provider } = await admin
-    .from("ai_providers")
-    .select("*")
-    .eq("id", providerId)
-    .eq("user_id", userId)
-    .single();
-  if (!provider) throw new AIProviderError("Provider not found", "unknown");
-  return {
-    id: provider.id,
-    name: provider.name,
-    providerType: provider.provider_type as ProviderType,
-    baseUrl: provider.base_url,
-    apiKey: decryptSecret(provider.api_key_encrypted),
-    model: provider.model,
-    temperature: provider.temperature ?? 0.2,
-    maxTokens: provider.max_tokens ?? 4096,
-    timeoutSeconds: provider.timeout_seconds ?? 60,
-    retryCount: provider.retry_count ?? 1,
-  };
+export async function getProviderById(userId: string, providerId?: string | null): Promise<ResolvedProvider> {
+  if (!providerId || providerId === "env") {
+    return getActiveProvider(userId);
+  }
+
+  try {
+    const admin = createAdminClient();
+    const { data: provider } = await admin
+      .from("ai_providers")
+      .select("*")
+      .eq("id", providerId)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (provider) {
+      return {
+        id: provider.id,
+        name: provider.name,
+        providerType: provider.provider_type as ProviderType,
+        baseUrl: provider.base_url,
+        apiKey: decryptSecret(provider.api_key_encrypted),
+        model: provider.model,
+        temperature: provider.temperature ?? 0.2,
+        maxTokens: provider.max_tokens ?? 4096,
+        timeoutSeconds: provider.timeout_seconds ?? 60,
+        retryCount: provider.retry_count ?? 1,
+      };
+    }
+  } catch {
+    // fallback to active provider
+  }
+
+  return getActiveProvider(userId);
 }
 
 /** Minimal connectivity test against a configured provider. */
