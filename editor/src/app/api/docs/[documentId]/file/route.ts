@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getOwnedDocument, getLatestVersion, sqlQuery } from "@/lib/db";
 import { audit } from "@/lib/documents";
 
 /**
@@ -26,33 +27,60 @@ export async function GET(
   const admin = createAdminClient();
 
   // Ownership check
-  const { data: doc } = await admin
-    .from("documents")
-    .select("name, owner_id")
-    .eq("id", documentId)
-    .eq("owner_id", user.id)
-    .single();
+  let doc: any = null;
+  try {
+    doc = await getOwnedDocument(documentId, user.id);
+  } catch {
+    // fallback
+  }
+  if (!doc) {
+    const { data } = await admin
+      .from("documents")
+      .select("name, owner_id")
+      .eq("id", documentId)
+      .eq("owner_id", user.id)
+      .single();
+    doc = data;
+  }
   if (!doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   // Resolve the version path
   let filePath: string | null = null;
   if (versionParam) {
-    const { data: version } = await admin
-      .from("document_versions")
-      .select("file_path")
-      .eq("document_id", documentId)
-      .eq("version_number", parseInt(versionParam, 10))
-      .single();
-    filePath = version?.file_path ?? null;
+    try {
+      const rows = await sqlQuery(
+        `SELECT file_path FROM public.document_versions WHERE document_id = '${documentId.replace(/'/g, "''")}' AND version_number = ${parseInt(versionParam, 10)} LIMIT 1;`
+      );
+      if (rows[0]?.file_path) filePath = rows[0].file_path;
+    } catch {
+      // fallback
+    }
+    if (!filePath) {
+      const { data: version } = await admin
+        .from("document_versions")
+        .select("file_path")
+        .eq("document_id", documentId)
+        .eq("version_number", parseInt(versionParam, 10))
+        .single();
+      filePath = version?.file_path ?? null;
+    }
   } else {
-    const { data: version } = await admin
-      .from("document_versions")
-      .select("file_path")
-      .eq("document_id", documentId)
-      .order("version_number", { ascending: false })
-      .limit(1)
-      .single();
-    filePath = version?.file_path ?? null;
+    try {
+      const latest = await getLatestVersion(documentId);
+      if (latest?.file_path) filePath = latest.file_path;
+    } catch {
+      // fallback
+    }
+    if (!filePath) {
+      const { data: version } = await admin
+        .from("document_versions")
+        .select("file_path")
+        .eq("document_id", documentId)
+        .order("version_number", { ascending: false })
+        .limit(1)
+        .single();
+      filePath = version?.file_path ?? null;
+    }
   }
   if (!filePath) return NextResponse.json({ error: "No file for this document" }, { status: 404 });
 

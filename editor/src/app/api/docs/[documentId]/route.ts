@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getOwnedDocument, getAllVersions, getAllAnnotations } from "@/lib/db";
 import { audit, createVersion } from "@/lib/documents";
 
 export async function GET(
@@ -14,28 +15,48 @@ export async function GET(
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { documentId } = await params;
-  const admin = createAdminClient();
+  let doc: any = null;
+  let versions: any[] = [];
+  let annotations: any[] = [];
 
-  const { data: doc, error } = await admin
-    .from("documents")
-    .select("*")
-    .eq("id", documentId)
-    .eq("owner_id", user.id)
-    .single();
-  if (error || !doc) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  try {
+    doc = await getOwnedDocument(documentId, user.id);
+    if (doc) {
+      [versions, annotations] = await Promise.all([
+        getAllVersions(documentId),
+        getAllAnnotations(documentId),
+      ]);
+    }
+  } catch {
+    // fallback to admin client
+  }
 
-  const [{ data: versions }, { data: annotations }] = await Promise.all([
-    admin
-      .from("document_versions")
+  if (!doc) {
+    const admin = createAdminClient();
+    const { data, error } = await admin
+      .from("documents")
       .select("*")
-      .eq("document_id", documentId)
-      .order("version_number", { ascending: true }),
-    admin
-      .from("annotations")
-      .select("*")
-      .eq("document_id", documentId)
-      .order("created_at", { ascending: false }),
-  ]);
+      .eq("id", documentId)
+      .eq("owner_id", user.id)
+      .single();
+    if (error || !data) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    doc = data;
+
+    const [vRes, aRes] = await Promise.all([
+      admin
+        .from("document_versions")
+        .select("*")
+        .eq("document_id", documentId)
+        .order("version_number", { ascending: true }),
+      admin
+        .from("annotations")
+        .select("*")
+        .eq("document_id", documentId)
+        .order("created_at", { ascending: false }),
+    ]);
+    versions = vRes.data ?? [];
+    annotations = aRes.data ?? [];
+  }
 
   return NextResponse.json({
     document: doc,

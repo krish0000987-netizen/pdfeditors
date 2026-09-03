@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { getOwnedDocument, getLatestVersion, insertVersion, sqlQuery } from "@/lib/db";
 import { engine } from "@/lib/engine/client";
 import type { EngineEditResult } from "@/lib/engine/client";
 
@@ -8,6 +9,14 @@ export async function getLatestVersionPath(
   _supabase: unknown,
   documentId: string
 ): Promise<{ path: string; versionNumber: number } | null> {
+  try {
+    const row = await getLatestVersion(documentId);
+    if (row?.file_path) {
+      return { path: row.file_path, versionNumber: row.version_number };
+    }
+  } catch {
+    // fallback to admin client
+  }
   const admin = createAdminClient();
   const { data } = await admin
     .from("document_versions")
@@ -24,6 +33,12 @@ export async function nextVersionNumber(
   _supabase: unknown,
   documentId: string
 ): Promise<number> {
+  try {
+    const row = await getLatestVersion(documentId);
+    if (row?.version_number) return row.version_number + 1;
+  } catch {
+    // fallback
+  }
   const admin = createAdminClient();
   const { data } = await admin
     .from("document_versions")
@@ -49,6 +64,12 @@ export async function createVersion(
     pageCount?: number;
   }
 ) {
+  try {
+    const row = await insertVersion(opts);
+    if (row) return row;
+  } catch {
+    // fallback
+  }
   const admin = createAdminClient();
   const versionNumber = await nextVersionNumber(admin, opts.documentId);
   const { data, error } = await admin
@@ -78,15 +99,26 @@ export async function audit(
   }
 ) {
   try {
-    const admin = createAdminClient();
-    await admin.from("audit_logs").insert({
-      user_id: opts.userId,
-      document_id: opts.documentId ?? null,
-      action: opts.action,
-      metadata: opts.metadata ?? {},
-    });
-  } catch (e) {
-    console.error("audit log failed", e);
+    const safeUserId = opts.userId.replace(/'/g, "''");
+    const safeDocId = opts.documentId ? `'${opts.documentId.replace(/'/g, "''")}'` : "NULL";
+    const safeAction = opts.action.replace(/'/g, "''");
+    const safeMeta = JSON.stringify(opts.metadata ?? {}).replace(/'/g, "''");
+    await sqlQuery(
+      `INSERT INTO public.audit_logs (user_id, document_id, action, metadata)
+       VALUES ('${safeUserId}', ${safeDocId}, '${safeAction}', '${safeMeta}'::jsonb);`
+    );
+  } catch {
+    try {
+      const admin = createAdminClient();
+      await admin.from("audit_logs").insert({
+        user_id: opts.userId,
+        document_id: opts.documentId ?? null,
+        action: opts.action,
+        metadata: opts.metadata ?? {},
+      });
+    } catch (e) {
+      console.error("audit log failed", e);
+    }
   }
 }
 
@@ -96,6 +128,12 @@ export async function requireOwnedDocument(
   userId: string,
   documentId: string
 ) {
+  try {
+    const doc = await getOwnedDocument(documentId, userId);
+    if (doc) return doc;
+  } catch {
+    // fallback
+  }
   const admin = createAdminClient();
   const { data: doc, error } = await admin
     .from("documents")
