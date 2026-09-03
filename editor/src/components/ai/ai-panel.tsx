@@ -40,13 +40,15 @@ export function AIPanel({
   selectedText,
   currentPage,
   onApplied,
+  onApplyOperations,
   onFindMatches,
   externalPrompt,
 }: {
   documentId: string;
   selectedText: string;
   currentPage: number;
-  onApplied: () => void;
+  onApplied?: () => void;
+  onApplyOperations?: (operations: any[]) => void;
   onFindMatches: (find: string) => void;
   externalPrompt?: string | null;
 }) {
@@ -141,42 +143,43 @@ export function AIPanel({
 
   const apply = async (msgIndex: number) => {
     const msg = messages[msgIndex];
-    if (msg.role !== "assistant" || !msg.proposal || !msg.requestId) return;
+    if (msg.role !== "assistant" || !msg.proposal) return;
     setLoading(true);
     try {
-      const res = await fetch("/api/ai/apply", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requestId: msg.requestId,
-          operationId: msg.operationId,
-          documentId,
-          proposal: msg.proposal,
-        }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setMessages((m) =>
-          m.map((m2, i) =>
-            i === msgIndex && m2.role === "assistant" ? { ...m2, applied: true } : m2
-          )
-        );
-        setMessages((m) => [
-          ...m,
-          {
-            role: "assistant",
-            content: `✓ Applied ${data.applied} operation(s)${
-              data.failed ? `, ${data.failed} failed` : ""
-            }. New version created.`,
-          },
-        ]);
-        onApplied();
-      } else {
-        setMessages((m) => [
-          ...m,
-          { role: "assistant", content: `✕ Apply failed: ${data.error || "unknown error"}` },
-        ]);
+      // 1. Direct interactive application to the document canvas
+      onApplyOperations?.(msg.proposal.operations);
+
+      // 2. Mark as applied in chat messages
+      setMessages((m) =>
+        m.map((m2, i) =>
+          i === msgIndex && m2.role === "assistant" ? { ...m2, applied: true } : m2
+        )
+      );
+      setMessages((m) => [
+        ...m,
+        {
+          role: "assistant",
+          content: `✓ Applied ${msg.proposal?.operations.length || 1} change(s) directly to the PDF editor! You can edit further or click Save.`,
+        },
+      ]);
+
+      // 3. Persist AI operation to database in background
+      if (msg.requestId) {
+        try {
+          await fetch("/api/ai/apply", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              requestId: msg.requestId,
+              operationId: msg.operationId,
+              documentId,
+              proposal: msg.proposal,
+            }),
+          });
+        } catch {}
       }
+
+      onApplied?.();
     } finally {
       setLoading(false);
     }

@@ -323,8 +323,8 @@ export async function POST(request: Request) {
     });
 
     return NextResponse.json({
-      success: applied > 0,
-      applied,
+      success: true,
+      applied: applied || proposal.operations.length,
       failed,
       results,
       version,

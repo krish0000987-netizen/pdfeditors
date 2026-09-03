@@ -629,6 +629,180 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
     window.open(`/api/docs/${documentId}/file?download=1`, "_blank");
   }, [pdfData, docModel, doc?.name, documentId]);
 
+  // ── AI OPERATIONS INTEGRATION ──
+  const handleApplyAiOperations = useCallback(
+    (operations: any[]) => {
+      if (!Array.isArray(operations) || operations.length === 0) return;
+
+      const before = JSON.parse(JSON.stringify(docModel)) as DocumentModel;
+      const next = JSON.parse(JSON.stringify(docModel)) as DocumentModel;
+      let changesCount = 0;
+
+      const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+      for (const op of operations) {
+        if (!op || typeof op !== "object") continue;
+
+        switch (op.type) {
+          case "replace_all":
+          case "replace_text": {
+            const findStr = String(op.find || "");
+            const replaceStr = String(op.replace ?? "");
+            if (!findStr) break;
+
+            const targetPages =
+              op.page !== undefined && op.type === "replace_text"
+                ? [Number(op.page)]
+                : next.pages.map((_, i) => i);
+
+            for (const pIdx of targetPages) {
+              const pModel = next.pages[pIdx];
+              if (!pModel) continue;
+
+              for (const textEl of pModel.textElements) {
+                if (textEl.deleted) continue;
+                const regex = new RegExp(escapeRegExp(findStr), "gi");
+                if (regex.test(textEl.text)) {
+                  textEl.text = textEl.text.replace(regex, replaceStr);
+                  textEl.modified = true;
+                  changesCount++;
+                }
+              }
+            }
+            break;
+          }
+
+          case "delete_text": {
+            const findStr = String(op.find || "");
+            if (!findStr) break;
+
+            const targetPages =
+              op.page !== undefined
+                ? [Number(op.page)]
+                : next.pages.map((_, i) => i);
+
+            for (const pIdx of targetPages) {
+              const pModel = next.pages[pIdx];
+              if (!pModel) continue;
+
+              for (const textEl of pModel.textElements) {
+                if (textEl.deleted) continue;
+                const regex = new RegExp(escapeRegExp(findStr), "gi");
+                if (regex.test(textEl.text)) {
+                  textEl.deleted = true;
+                  textEl.modified = true;
+                  changesCount++;
+                }
+              }
+            }
+            break;
+          }
+
+          case "insert_text": {
+            const pIdx = Number(op.page ?? page - 1);
+            if (!next.pages[pIdx]) {
+              next.pages[pIdx] = createEmptyPageModel(pIdx);
+            }
+            const pModel = next.pages[pIdx];
+            const newTextEl: TextElement = {
+              id: `ai-text-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              pageIndex: pIdx,
+              text: String(op.text || ""),
+              x: Number(op.x ?? 80),
+              y: Number(op.y ?? 100),
+              width: 250,
+              height: 35,
+              fontFamily: "Helvetica, Arial, sans-serif",
+              fontSize: Number(op.font_size ?? 14),
+              fontWeight: "bold",
+              fontStyle: "normal",
+              underline: false,
+              strike: false,
+              color: "#1e3a8a",
+              textAlign: "left",
+              lineHeight: 1.25,
+              letterSpacing: 0,
+              opacity: 1,
+              rotation: 0,
+              source: "added",
+              modified: true,
+              deleted: false,
+            };
+            pModel.textElements.push(newTextEl);
+            changesCount++;
+            break;
+          }
+
+          case "highlight_text": {
+            const findStr = String(op.find || "");
+            const pIdx = Number(op.page ?? page - 1);
+            const pModel = next.pages[pIdx];
+            if (pModel && findStr) {
+              const matchingEl = pModel.textElements.find(
+                (t) => !t.deleted && t.text.toLowerCase().includes(findStr.toLowerCase())
+              );
+              if (matchingEl) {
+                pModel.shapeElements.push({
+                  id: `ai-hl-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                  pageIndex: pIdx,
+                  type: "highlight",
+                  x: matchingEl.x - 2,
+                  y: matchingEl.y - 2,
+                  width: matchingEl.width + 4,
+                  height: matchingEl.height + 4,
+                  strokeColor: "transparent",
+                  fillColor: "#fef08a",
+                  strokeWidth: 0,
+                  opacity: 0.5,
+                  rotation: 0,
+                  source: "added",
+                  modified: true,
+                  deleted: false,
+                });
+                changesCount++;
+              }
+            }
+            break;
+          }
+
+          case "redact_region": {
+            const regions = Array.isArray(op.regions) ? op.regions : [];
+            for (const r of regions) {
+              const pIdx = Number(r.page ?? page - 1);
+              const pModel = next.pages[pIdx];
+              if (pModel && Array.isArray(r.bbox)) {
+                const [x0, y0, x1, y1] = r.bbox;
+                pModel.redactionElements.push({
+                  id: `ai-redact-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                  pageIndex: pIdx,
+                  x: x0,
+                  y: y0,
+                  width: Math.abs(x1 - x0),
+                  height: Math.abs(y1 - y0),
+                  overlayText: "[REDACTED]",
+                  fillColor: "#000000",
+                  source: "added",
+                  deleted: false,
+                });
+                changesCount++;
+              }
+            }
+            break;
+          }
+        }
+      }
+
+      setDocModel(next);
+      recordHistory(`AI: Applied ${operations.length} operation(s)`, before, next);
+      if (changesCount > 0) {
+        showToast(`✓ AI applied ${changesCount} change(s) directly to the PDF! Click Save to bake.`);
+      } else {
+        showToast("✓ AI operations processed.");
+      }
+    },
+    [docModel, page, recordHistory, showToast]
+  );
+
   const handleDeleteDocument = useCallback(async () => {
     if (
       !confirm(
@@ -899,6 +1073,7 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
                   documentId={documentId}
                   currentPage={page}
                   selectedText={selectedText}
+                  onApplyOperations={handleApplyAiOperations}
                   onApplied={() => {
                     void loadPdf();
                     void loadDoc();
