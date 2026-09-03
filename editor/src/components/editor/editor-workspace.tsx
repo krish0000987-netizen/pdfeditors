@@ -655,17 +655,37 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
                 ? [Number(op.page)]
                 : next.pages.map((_, i) => i);
 
+            const cleanFind = findStr.trim();
+            const findWords = cleanFind.toLowerCase().split(/\s+/).filter(Boolean);
+
             for (const pIdx of targetPages) {
               const pModel = next.pages[pIdx];
               if (!pModel) continue;
 
               for (const textEl of pModel.textElements) {
                 if (textEl.deleted) continue;
-                const regex = new RegExp(escapeRegExp(findStr), "gi");
+
+                const textLower = textEl.text.toLowerCase();
+                const regex = new RegExp(escapeRegExp(cleanFind), "gi");
+
+                // 1. Exact regex match
                 if (regex.test(textEl.text)) {
                   textEl.text = textEl.text.replace(regex, replaceStr);
                   textEl.modified = true;
                   changesCount++;
+                  continue;
+                }
+
+                // 2. Flexible multi-word / prefix matching for typos & punctuation
+                if (findWords.length > 0) {
+                  const allWordsMatch = findWords.every((w) =>
+                    textLower.includes(w.length > 4 ? w.slice(0, -1) : w)
+                  );
+                  if (allWordsMatch) {
+                    textEl.text = textEl.text.length <= cleanFind.length + 5 ? replaceStr : textEl.text.replace(new RegExp(textEl.text, "i"), replaceStr);
+                    textEl.modified = true;
+                    changesCount++;
+                  }
                 }
               }
             }
@@ -681,17 +701,34 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
                 ? [Number(op.page)]
                 : next.pages.map((_, i) => i);
 
+            const cleanFind = findStr.trim();
+            const findWords = cleanFind.toLowerCase().split(/\s+/).filter(Boolean);
+
             for (const pIdx of targetPages) {
               const pModel = next.pages[pIdx];
               if (!pModel) continue;
 
               for (const textEl of pModel.textElements) {
                 if (textEl.deleted) continue;
-                const regex = new RegExp(escapeRegExp(findStr), "gi");
+                const textLower = textEl.text.toLowerCase();
+                const regex = new RegExp(escapeRegExp(cleanFind), "gi");
+
                 if (regex.test(textEl.text)) {
                   textEl.deleted = true;
                   textEl.modified = true;
                   changesCount++;
+                  continue;
+                }
+
+                if (findWords.length > 0) {
+                  const allWordsMatch = findWords.every((w) =>
+                    textLower.includes(w.length > 4 ? w.slice(0, -1) : w)
+                  );
+                  if (allWordsMatch) {
+                    textEl.deleted = true;
+                    textEl.modified = true;
+                    changesCount++;
+                  }
                 }
               }
             }
@@ -795,7 +832,7 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
       setDocModel(next);
       recordHistory(`AI: Applied ${operations.length} operation(s)`, before, next);
       if (changesCount > 0) {
-        showToast(`✓ AI applied ${changesCount} change(s) directly to the PDF! Click Save to bake.`);
+        showToast(`✓ AI updated ${changesCount} element(s) on the canvas! Click Save to bake.`);
       } else {
         showToast("✓ AI operations processed.");
       }
@@ -806,18 +843,25 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
   const handleDeleteDocument = useCallback(async () => {
     if (
       !confirm(
-        `Are you sure you want to delete "${doc?.name || "this document"}" and move it to trash?`
+        "Are you sure you want to delete this document? It will be moved to trash."
       )
-    )
+    ) {
       return;
-    try {
-      const res = await fetch(`/api/docs/${documentId}`, { method: "DELETE" });
-      if (!res.ok) throw new Error("Failed to delete document");
-      router.push("/documents");
-    } catch (err) {
-      showToast(err instanceof Error ? err.message : "Failed to delete document");
     }
-  }, [doc?.name, documentId, router]);
+    try {
+      const res = await fetch(`/api/docs/${documentId}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        window.location.href = "/dashboard";
+      } else {
+        const data = await res.json().catch(() => ({}));
+        alert(data.error || "Failed to delete document");
+      }
+    } catch {
+      alert("Network error while deleting document");
+    }
+  }, [documentId]);
 
   const selectedTextEl = currentPageModel.textElements.find((t) => t.id === selectedElementId) || null;
 
@@ -1075,8 +1119,7 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
                   selectedText={selectedText}
                   onApplyOperations={handleApplyAiOperations}
                   onApplied={() => {
-                    void loadPdf();
-                    void loadDoc();
+                    // Do not reload raw unbaked PDF; keep modified client docModel visible on canvas
                   }}
                   onFindMatches={(_findText: string) => {
                     setPanel("find");

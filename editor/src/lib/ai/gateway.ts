@@ -602,11 +602,12 @@ RULES:
   "requires_confirmation": <true if any operation modifies the document>
 }
 2. For editing tasks:
-   - "find" values must match exact text present in the document.
-   - For adding stamps, approvals, or signatures: use "insert_text" or "add_annotation".
-   - For masking sensitive numbers or dates: use "replace_text" or "replace_all".
+   - "find" values MUST match the exact text present in the DOCUMENT CONTEXT (e.g. if the document has "UNITED SPORTS", use "UNITED SPORTS" even if the user typed "united sportd").
+   - For replacing names/text: use "replace_all" or "replace_text" with "find" and "replace".
+   - For adding stamps, approvals, or bank stamps: use "insert_text" or "add_annotation".
+   - For masking sensitive numbers, PII, or balances: use "replace_text" or "replace_all".
    - For highlights: use "highlight_text".
-   - For redaction: use "redact_region" or "replace_text".
+   - For redactions: use "redact_region" or "replace_text".
 3. For questions, analysis, explanations, or summaries:
    - Place your full helpful answer/summary in the "explanation" field.
    - Set "operations": [] and "requires_confirmation": false.
