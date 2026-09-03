@@ -213,7 +213,9 @@ async function callGeminiCompatible(
   p: ResolvedProvider,
   req: AIChatRequest
 ): Promise<AIChatResponse> {
-  const url = `${normalizeBase(p.baseUrl)}/models/${encodeURIComponent(p.model)}:generateContent`;
+  const model = p.model === "gemini-2.0-flash" ? "gemini-3.6-flash" : p.model;
+  const baseUrl = normalizeBase(p.baseUrl);
+  const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(p.apiKey)}`;
   const res = await fetchWithTimeout(
     url,
     {
@@ -257,7 +259,7 @@ async function callGeminiCompatible(
           outputTokens: data.usageMetadata.candidatesTokenCount ?? 0,
         }
       : null,
-    model: p.model,
+    model,
   };
 }
 
@@ -349,10 +351,14 @@ export async function getActiveProvider(userId: string): Promise<ResolvedProvide
       "invalid_base_url"
     );
   }
+  const providerType = (
+    process.env.AI_DEFAULT_PROVIDER ||
+    (baseUrl.includes("generativelanguage.googleapis.com") ? "gemini_compatible" : "openai_compatible")
+  ) as ProviderType;
   return {
     id: "env",
     name: "Environment default",
-    providerType: "openai_compatible",
+    providerType,
     baseUrl,
     apiKey,
     model,
@@ -454,11 +460,9 @@ export async function extractContext(
   context: AIContext,
   opts?: { pages?: number[]; selectedText?: string }
 ): Promise<DocumentContext> {
-  const { createClient } = await import("@/lib/supabase/server");
-  const supabase = await createClient();
-  const { engine } = await import("@/lib/engine/client");
+  const admin = createAdminClient();
 
-  const { data: doc } = await supabase
+  const { data: doc } = await admin
     .from("documents")
     .select("id, page_count, document_versions(file_path, version_number)")
     .eq("id", documentId)
@@ -476,9 +480,44 @@ export async function extractContext(
     return { text: opts.selectedText.slice(0, MAX_CONTEXT_CHARS), pageCount };
   }
 
+  const getText = async (pageIndex?: number) => {
+    try {
+      const { engine } = await import("@/lib/engine/client");
+      const res = await engine.getText(latest.file_path, pageIndex);
+      if (res && typeof res.text === "string") return res.text;
+    } catch {
+      // Fallback to pdfjs-dist directly from stored file bytes
+    }
+
+    try {
+      const { data: blob, error } = await admin.storage.from("documents").download(latest.file_path);
+      if (!blob || error) return "";
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+      const loadingTask = pdfjs.getDocument({ data: bytes });
+      const pdf = await loadingTask.promise;
+      if (typeof pageIndex === "number" && pageIndex >= 0 && pageIndex < pdf.numPages) {
+        const p = await pdf.getPage(pageIndex + 1);
+        const content = await p.getTextContent();
+        return content.items.map((item: any) => item.str || "").filter(Boolean).join(" ");
+      }
+      const parts: string[] = [];
+      for (let i = 1; i <= Math.min(pdf.numPages, 10); i++) {
+        const p = await pdf.getPage(i);
+        const content = await p.getTextContent();
+        const str = content.items.map((item: any) => item.str || "").filter(Boolean).join(" ");
+        parts.push(`--- Page ${i} ---\n${str}`);
+      }
+      return parts.join("\n\n");
+    } catch (e) {
+      console.warn("Failed to extract context text fallback:", e);
+      return "";
+    }
+  };
+
   if (context === "page") {
     const page = opts?.pages?.[0] ?? 0;
-    const { text } = await engine.getText(latest.file_path, page);
+    const text = await getText(page);
     return {
       text: text.slice(0, MAX_CONTEXT_CHARS),
       pageCount,
@@ -489,7 +528,7 @@ export async function extractContext(
   if (context === "pages" && opts?.pages?.length) {
     const parts: string[] = [];
     for (const p of opts.pages.slice(0, 10)) {
-      const { text } = await engine.getText(latest.file_path, p);
+      const text = await getText(p);
       parts.push(`--- Page ${p + 1} ---\n${text}`);
     }
     const joined = parts.join("\n\n");
@@ -500,8 +539,8 @@ export async function extractContext(
     };
   }
 
-  // entire document — cap pages to keep requests bounded
-  const { text } = await engine.getText(latest.file_path);
+  // entire document
+  const text = await getText();
   return {
     text: text.slice(0, MAX_CONTEXT_CHARS),
     pageCount,

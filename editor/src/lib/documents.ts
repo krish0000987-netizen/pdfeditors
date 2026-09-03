@@ -5,10 +5,11 @@ import type { EngineEditResult } from "@/lib/engine/client";
 
 /** Path of the file backing the latest version of a document. */
 export async function getLatestVersionPath(
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  _supabase: unknown,
   documentId: string
 ): Promise<{ path: string; versionNumber: number } | null> {
-  const { data } = await supabase
+  const admin = createAdminClient();
+  const { data } = await admin
     .from("document_versions")
     .select("file_path, version_number")
     .eq("document_id", documentId)
@@ -20,10 +21,11 @@ export async function getLatestVersionPath(
 
 /** Next sequential version number for a document. */
 export async function nextVersionNumber(
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  _supabase: unknown,
   documentId: string
 ): Promise<number> {
-  const { data } = await supabase
+  const admin = createAdminClient();
+  const { data } = await admin
     .from("document_versions")
     .select("version_number")
     .eq("document_id", documentId)
@@ -37,7 +39,7 @@ export async function nextVersionNumber(
  * The original file (and every prior version file) is never overwritten.
  */
 export async function createVersion(
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  _supabase: unknown,
   opts: {
     documentId: string;
     userId: string;
@@ -47,8 +49,9 @@ export async function createVersion(
     pageCount?: number;
   }
 ) {
-  const versionNumber = await nextVersionNumber(supabase, opts.documentId);
-  const { data, error } = await supabase
+  const admin = createAdminClient();
+  const versionNumber = await nextVersionNumber(admin, opts.documentId);
+  const { data, error } = await admin
     .from("document_versions")
     .insert({
       document_id: opts.documentId,
@@ -89,11 +92,12 @@ export async function audit(
 
 /** Verify the caller owns the document and return it. */
 export async function requireOwnedDocument(
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  _supabase: unknown,
   userId: string,
   documentId: string
 ) {
-  const { data: doc, error } = await supabase
+  const admin = createAdminClient();
+  const { data: doc, error } = await admin
     .from("documents")
     .select("*")
     .eq("id", documentId)
@@ -109,7 +113,7 @@ export async function requireOwnedDocument(
  * must return the engine output path (or null when the op only reads).
  */
 export async function runEngineVersioned(
-  supabase: Awaited<ReturnType<typeof createClient>>,
+  _supabase: unknown,
   opts: {
     documentId: string;
     userId: string;
@@ -125,7 +129,8 @@ export async function runEngineVersioned(
   version: Record<string, unknown> | null;
   result: unknown;
 }> {
-  const source = opts.sourcePath ?? (await getLatestVersionPath(supabase, opts.documentId))?.path;
+  const admin = createAdminClient();
+  const source = opts.sourcePath ?? (await getLatestVersionPath(admin, opts.documentId))?.path;
   if (!source) throw new Error("Document has no editable file");
 
   const result = await opts.op(source);
@@ -133,7 +138,7 @@ export async function runEngineVersioned(
 
   let version: Record<string, unknown> | null = null;
   if (outputPath) {
-    version = (await createVersion(supabase, {
+    version = (await createVersion(admin, {
       documentId: opts.documentId,
       userId: opts.userId,
       filePath: outputPath,
@@ -141,7 +146,7 @@ export async function runEngineVersioned(
       operationSummary: opts.operationSummary,
     })) as unknown as Record<string, unknown>;
 
-    await supabase
+    await admin
       .from("documents")
       .update({ updated_at: new Date().toISOString() })
       .eq("id", opts.documentId);

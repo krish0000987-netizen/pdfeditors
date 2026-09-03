@@ -26,8 +26,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "documentId and proposal required" }, { status: 400 });
   }
 
+  const admin = createAdminClient();
+
   // ownership
-  const { data: doc } = await supabase
+  const { data: doc } = await admin
     .from("documents")
     .select("id")
     .eq("id", documentId)
@@ -47,8 +49,6 @@ export async function POST(request: Request) {
   if (proposal.operations.length === 0) {
     return NextResponse.json({ error: "No operations to apply" }, { status: 400 });
   }
-
-  const admin = createAdminClient();
 
   // confirm the ai_operation row exists and belongs to this user
   if (operationId) {
@@ -243,14 +243,14 @@ export async function POST(request: Request) {
             const ids = (op.source_document_ids as string[]) ?? [];
             const paths: string[] = [source];
             for (const srcId of ids.slice(0, 5)) {
-              const { data: srcDoc } = await supabase
+              const { data: srcDoc } = await admin
                 .from("documents")
                 .select("id")
                 .eq("id", srcId)
                 .eq("owner_id", user.id)
                 .single();
               if (!srcDoc) continue;
-              const p = (await getLatestVersionPath(supabase, srcId))?.path;
+              const p = (await getLatestVersionPath(admin, srcId))?.path;
               if (p) paths.push(p);
             }
             if (paths.length > 1) {
@@ -281,9 +281,9 @@ export async function POST(request: Request) {
 
     // Persist the final file as one new version (if anything mutated)
     let version: Record<string, unknown> | null = null;
-    if (lastOutputPath && lastOutputPath !== (await getLatestVersionPath(supabase, documentId))?.path) {
+    if (lastOutputPath && lastOutputPath !== (await getLatestVersionPath(admin, documentId))?.path) {
       const { createVersion } = await import("@/lib/documents");
-      version = (await createVersion(supabase, {
+      version = (await createVersion(admin, {
         documentId,
         userId: user.id,
         filePath: lastOutputPath,
@@ -291,7 +291,7 @@ export async function POST(request: Request) {
         operationSummary: `AI: ${proposal.intent} (${applied} op${applied === 1 ? "" : "s"})`,
       })) as unknown as Record<string, unknown>;
 
-      await supabase
+      await admin
         .from("documents")
         .update({ updated_at: new Date().toISOString() })
         .eq("id", documentId);
