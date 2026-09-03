@@ -248,8 +248,8 @@ export function AIPanel({
             {SUGGESTIONS.map((s) => (
               <button
                 key={s}
-                onClick={() => setInput(s)}
-                className="text-xs bg-gray-50 hover:bg-gray-100 px-2.5 py-1 rounded-full text-gray-600"
+                onClick={() => send(s)}
+                className="text-xs bg-gray-50 hover:bg-indigo-50 hover:text-indigo-600 px-2.5 py-1 rounded-full text-gray-600 transition-colors cursor-pointer text-left"
               >
                 {s}
               </button>
@@ -266,7 +266,7 @@ export function AIPanel({
               setLastFailedPrompt(null);
               send(p);
             }}
-            className="w-full mb-2 text-xs border border-gray-200 rounded-lg py-1.5 hover:bg-gray-50"
+            className="w-full mb-2 text-xs border border-gray-200 rounded-lg py-1.5 hover:bg-gray-50 text-gray-600"
           >
             ↻ Retry last request
           </button>
@@ -281,17 +281,17 @@ export function AIPanel({
                 send();
               }
             }}
-            placeholder="Tell the AI what to do…"
+            placeholder="Ask AI or tell it how to edit this PDF…"
             rows={2}
-            disabled={loading || providers.length === 0}
+            disabled={loading}
             className="flex-1 rounded-lg border border-gray-200 px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-600 disabled:bg-gray-50"
           />
           <button
             onClick={() => send()}
             disabled={loading || !input.trim()}
-            className="bg-indigo-600 text-white px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-50 self-end"
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-2 rounded-lg text-sm font-semibold disabled:opacity-50 self-end transition-colors cursor-pointer"
           >
-            Send
+            {loading ? "..." : "Send"}
           </button>
         </div>
       </div>

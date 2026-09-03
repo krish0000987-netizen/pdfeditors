@@ -28,10 +28,29 @@ export async function GET() {
     .maybeSingle();
 
   const activeId = settings?.active_provider_id ?? null;
+  const userProviders = providers ?? [];
+
+  // If no user providers, include the system environment provider so the UI shows it active
+  const systemProvider = process.env.AI_API_KEY
+    ? [
+        {
+          id: "env",
+          name: "Gemini Flash (System Default)",
+          provider_type: "gemini_compatible",
+          base_url: process.env.AI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta",
+          model: process.env.AI_MODEL || "gemini-3.6-flash",
+          is_active: true,
+          is_enabled: true,
+        },
+      ]
+    : [];
+
+  const allProviders = userProviders.length > 0 ? userProviders : systemProvider;
+
   return NextResponse.json({
-    providers: providers ?? [],
-    activeProviderId: activeId,
-    active: (providers ?? []).find((p) => p.id === activeId) ?? null,
+    providers: allProviders,
+    activeProviderId: activeId || (allProviders[0]?.id ?? null),
+    active: allProviders.find((p) => p.id === (activeId || allProviders[0]?.id)) ?? null,
   });
 }
 
