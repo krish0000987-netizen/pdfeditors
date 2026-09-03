@@ -10,7 +10,9 @@ import type {
 } from "./types";
 import { Move, Trash2, RotateCw } from "lucide-react";
 
-pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.mjs`;
+if (typeof window !== "undefined" && !pdfjs.GlobalWorkerOptions.workerSrc) {
+  pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+}
 
 export interface SelectionInfo {
   text: string;
