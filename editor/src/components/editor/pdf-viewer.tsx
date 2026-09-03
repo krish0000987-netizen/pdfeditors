@@ -78,6 +78,7 @@ export function PDFViewer({
   const overlayRef = useRef<HTMLDivElement>(null);
   const docRef = useRef<pdfjs.PDFDocumentProxy | null>(null);
   const renderTaskRef = useRef<pdfjs.RenderTask | null>(null);
+  const passwordCallbackRef = useRef<((pwd: string) => void) | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rendering, setRendering] = useState(false);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
@@ -111,13 +112,15 @@ export function PDFViewer({
       if (pwd) setUnlocking(true);
 
       try {
-        const bytes = new Uint8Array(data);
+        // Clone ArrayBuffer so PDF.js worker never detaches original data
+        const clonedBytes = new Uint8Array(data.slice(0));
         const loadingTask = pdfjs.getDocument({
-          data: bytes,
+          data: clonedBytes,
           password: pwd || undefined,
         });
 
-        loadingTask.onPassword = (_callback: (pwd: string) => void, reason: number) => {
+        loadingTask.onPassword = (callback: (pwd: string) => void, reason: number) => {
+          passwordCallbackRef.current = callback;
           setIsPasswordProtected(true);
           setUnlocking(false);
           if (reason === 2) {
@@ -127,6 +130,7 @@ export function PDFViewer({
 
         const pdf = await loadingTask.promise;
         docRef.current = pdf;
+        passwordCallbackRef.current = null;
         setPdfDoc(pdf);
         setIsPasswordProtected(false);
         setPasswordError(null);
@@ -149,11 +153,34 @@ export function PDFViewer({
     [data, onPageCount]
   );
 
+  const handleUnlockPassword = useCallback(
+    (pwd: string) => {
+      const clean = pwd.trim();
+      if (!clean) return;
+      setUnlocking(true);
+      setPasswordError(null);
+
+      // If PDF.js is waiting for the onPassword callback, supply it directly
+      if (passwordCallbackRef.current) {
+        try {
+          passwordCallbackRef.current(clean);
+          return;
+        } catch {
+          // fallback to reload
+        }
+      }
+
+      void loadDocument(clean);
+    },
+    [loadDocument]
+  );
+
   useEffect(() => {
     setPdfDoc(null);
     setIsPasswordProtected(false);
     setPasswordInput("");
     setPasswordError(null);
+    passwordCallbackRef.current = null;
     void loadDocument();
   }, [data, loadDocument]);
 
@@ -400,7 +427,7 @@ export function PDFViewer({
           onSubmit={(e) => {
             e.preventDefault();
             if (passwordInput.trim()) {
-              void loadDocument(passwordInput.trim());
+              handleUnlockPassword(passwordInput.trim());
             }
           }}
           className="w-full space-y-3"

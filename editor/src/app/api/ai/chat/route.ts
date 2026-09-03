@@ -99,10 +99,33 @@ export async function POST(request: Request) {
     try {
       raw = extractJson(response.content);
     } catch {
-      throw new AIProviderError(
-        "The AI reply was not valid JSON. Try rephrasing the request or use a more capable model.",
-        "malformed_response"
-      );
+      // Natural language conversational or informational response
+      if (aiRequest) {
+        await admin.from("ai_requests").update({ status: "succeeded" }).eq("id", aiRequest.id);
+      }
+      return NextResponse.json({
+        explanation: response.content.trim(),
+        proposal: null,
+      });
+    }
+
+    const rawObj = raw as Record<string, unknown>;
+    // If raw JSON contains no operations array or empty operations (informational/chat)
+    if (!rawObj || !Array.isArray(rawObj.operations) || rawObj.operations.length === 0) {
+      if (aiRequest) {
+        await admin.from("ai_requests").update({ status: "succeeded" }).eq("id", aiRequest.id);
+      }
+      const explanation =
+        typeof rawObj?.explanation === "string" && rawObj.explanation.trim()
+          ? rawObj.explanation.trim()
+          : typeof rawObj?.answer === "string"
+          ? rawObj.answer.trim()
+          : response.content.trim();
+
+      return NextResponse.json({
+        explanation,
+        proposal: null,
+      });
     }
 
     const validation = validateProposal(raw);
@@ -120,7 +143,7 @@ export async function POST(request: Request) {
         metadata: { prompt: prompt.slice(0, 200), outcome: "invalid_response", errors: validation.errors.slice(0, 3) },
       });
       return NextResponse.json({
-        explanation: `The AI proposed an operation I can't accept: ${validation.errors[0] ?? "invalid response"}`,
+        explanation: `The AI proposed an operation that could not be validated: ${validation.errors[0] ?? "invalid response"}`,
         proposal: null,
         validationErrors: validation.errors.slice(0, 5),
       });

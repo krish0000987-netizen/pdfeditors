@@ -363,7 +363,7 @@ export function extractJson(content: string): unknown {
     /* continue */
   }
   // fenced block
-  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fence) {
     try {
       return JSON.parse(fence[1].trim());
@@ -383,3 +383,5 @@ export function extractJson(content: string): unknown {
   }
   throw new Error("AI response does not contain valid JSON");
 }
+
+
