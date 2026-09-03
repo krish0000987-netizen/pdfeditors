@@ -23,12 +23,39 @@ export async function POST(request: Request) {
       ? body.document_type
       : "general";
 
-    const { engine } = await import("@/lib/engine/client");
-    const created = await engine.createBlank(pages);
-
-    // fetch the produced bytes and store them
-    const file = await engine.downloadFile(created.output_path);
-    const bytes = Buffer.from(file.data_b64, "base64");
+    let bytes: Buffer;
+    try {
+      const { engine } = await import("@/lib/engine/client");
+      const created = await engine.createBlank(pages);
+      const file = await engine.downloadFile(created.output_path);
+      bytes = Buffer.from(file.data_b64, "base64");
+    } catch (engineErr) {
+      console.warn("Engine service not reachable, generating blank PDF locally:", engineErr);
+      let pdf = "%PDF-1.4\n";
+      const objects: string[] = [
+        "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+      ];
+      const kids: string[] = [];
+      for (let i = 0; i < pages; i++) kids.push(`${3 + i} 0 R`);
+      objects.push(`2 0 obj\n<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${pages} >>\nendobj\n`);
+      for (let i = 0; i < pages; i++) {
+        objects.push(`${3 + i} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources <<>> >>\nendobj\n`);
+      }
+      const offsets: number[] = [0];
+      let currentOffset = pdf.length;
+      for (const obj of objects) {
+        offsets.push(currentOffset);
+        pdf += obj;
+        currentOffset += obj.length;
+      }
+      const xrefOffset = pdf.length;
+      pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+      for (let i = 1; i <= objects.length; i++) {
+        pdf += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+      }
+      pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+      bytes = Buffer.from(pdf, "utf-8");
+    }
 
     const docId = crypto.randomUUID();
     const storagePath = `${user.id}/${docId}/original/${name.endsWith(".pdf") ? name : `${name}.pdf`}`;

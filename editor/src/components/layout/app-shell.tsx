@@ -197,15 +197,29 @@ export function AppShell({
                     type="file"
                     accept=".pdf"
                     className="hidden"
-                    onChange={(e) => {
+                    onChange={async (e) => {
                       const file = e.target.files?.[0];
                       if (!file) return;
                       const form = new FormData();
                       form.append("file", file);
-                      fetch("/api/docs/upload", { method: "POST", body: form }).then((r) => {
-                        if (r.ok) router.push("/documents");
-                        else r.json().then((d) => alert(d.error || "Upload failed"));
-                      });
+                      try {
+                        const r = await fetch("/api/docs/upload", { method: "POST", body: form });
+                        if (r.ok) {
+                          const data = await r.json();
+                          if (data?.document?.id) {
+                            router.push(`/editor/${data.document.id}`);
+                          } else {
+                            router.push("/documents");
+                          }
+                          router.refresh();
+                        } else {
+                          const d = await r.json().catch(() => ({}));
+                          alert(d.error || "Upload failed");
+                        }
+                      } catch (err: any) {
+                        alert(err?.message || "Upload failed");
+                      }
+                      e.target.value = "";
                     }}
                   />
                 </label>

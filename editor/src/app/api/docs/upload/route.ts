@@ -48,9 +48,32 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "File is not a valid PDF (bad signature)" }, { status: 400 });
     }
 
-    // 4. Real page count / integrity via the engine
-    const { engine } = await import("@/lib/engine/client");
-    const created = await engine.createFromBytes(Buffer.from(bytes).toString("base64"));
+    // 4. Determine page count: try engine first, fallback to pure JS parser if engine is offline
+    let pageCount = 1;
+    try {
+      const { engine } = await import("@/lib/engine/client");
+      const created = await engine.createFromBytes(Buffer.from(bytes).toString("base64"));
+      if (created && typeof created.page_count === "number") {
+        pageCount = created.page_count;
+      }
+    } catch (engineErr) {
+      console.warn("Engine service not reachable, using fallback page counter:", engineErr);
+      try {
+        const text = new TextDecoder("latin1").decode(bytes);
+        const countMatches = [...text.matchAll(/\/Type\s*\/Pages[^>]*\/Count\s+(\d+)/gi)];
+        if (countMatches.length > 0) {
+          const count = parseInt(countMatches[countMatches.length - 1][1], 10);
+          if (count > 0) pageCount = count;
+        } else {
+          const pageMatches = text.match(/\/Type\s*\/Page\b(?!\s*s)/gi);
+          if (pageMatches && pageMatches.length > 0) {
+            pageCount = pageMatches.length;
+          }
+        }
+      } catch {
+        pageCount = 1;
+      }
+    }
 
     const safeName = name.replace(/[^\w.\- ()]/g, "_").slice(0, 180);
     const docId = crypto.randomUUID();
@@ -72,7 +95,7 @@ export async function POST(request: Request) {
         original_file_path: storagePath,
         mime_type: "application/pdf",
         file_size: bytes.byteLength,
-        page_count: created.page_count,
+        page_count: pageCount,
         status: "ready",
         document_type: allowedTypes.includes(documentType) ? documentType : "general",
       })
@@ -88,7 +111,7 @@ export async function POST(request: Request) {
       created_by: user.id,
       operation_type: "original",
       operation_summary: "Original upload",
-      page_count: created.page_count,
+      page_count: pageCount,
       file_size: bytes.byteLength,
     });
     if (vError) throw new Error(vError.message);
@@ -97,7 +120,7 @@ export async function POST(request: Request) {
       userId: user.id,
       documentId: docId,
       action: "document_uploaded",
-      metadata: { file_name: safeName, file_size: bytes.byteLength, page_count: created.page_count },
+      metadata: { file_name: safeName, file_size: bytes.byteLength, page_count: pageCount },
     });
 
     return NextResponse.json({ document: doc });
