@@ -23,6 +23,7 @@ import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Trash2,
 } from "lucide-react";
 import { PDFViewer, type SelectionInfo } from "./pdf-viewer";
 import { EditorRibbon } from "./editor-ribbon";
@@ -628,6 +629,22 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
     window.open(`/api/docs/${documentId}/file?download=1`, "_blank");
   }, [pdfData, docModel, doc?.name, documentId]);
 
+  const handleDeleteDocument = useCallback(async () => {
+    if (
+      !confirm(
+        `Are you sure you want to delete "${doc?.name || "this document"}" and move it to trash?`
+      )
+    )
+      return;
+    try {
+      const res = await fetch(`/api/docs/${documentId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete document");
+      router.push("/documents");
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : "Failed to delete document");
+    }
+  }, [doc?.name, documentId, router]);
+
   const selectedTextEl = currentPageModel.textElements.find((t) => t.id === selectedElementId) || null;
 
   return (
@@ -696,7 +713,7 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
           </div>
         </div>
 
-        {/* Save & Download Actions */}
+        {/* Save, Download & Delete Actions */}
         <div className="flex items-center gap-2">
           <button
             onClick={saveVisualEdits}
@@ -716,6 +733,14 @@ export function EditorWorkspace({ documentId }: { documentId: string }) {
           >
             <Download className="w-3.5 h-3.5" />
             <span>Download</span>
+          </button>
+          <button
+            onClick={handleDeleteDocument}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-xs font-semibold shadow-xs transition-colors"
+            title="Delete file and move to trash"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Delete</span>
           </button>
         </div>
       </header>
