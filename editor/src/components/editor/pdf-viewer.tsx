@@ -115,68 +115,84 @@ export function PDFViewer({
     (async () => {
       try {
         setRendering(true);
-        renderTaskRef.current?.cancel();
+        if (renderTaskRef.current) {
+          try {
+            renderTaskRef.current.cancel();
+          } catch {
+            // ignore cancel
+          }
+          renderTaskRef.current = null;
+        }
+
         const pdfPage = await pdf.getPage(page);
         if (cancelled) return;
 
-        const viewport = pdfPage.getViewport({ scale: zoom });
-        const outputScale = Math.min(2, window.devicePixelRatio || 1);
-        canvas.width = Math.floor(viewport.width * outputScale);
-        canvas.height = Math.floor(viewport.height * outputScale);
-        canvas.style.width = `${Math.floor(viewport.width)}px`;
-        canvas.style.height = `${Math.floor(viewport.height)}px`;
+        const dpr = Math.min(2, window.devicePixelRatio || 1);
+        const pixelViewport = pdfPage.getViewport({ scale: zoom * dpr });
+        const cssWidth = Math.floor(pixelViewport.width / dpr);
+        const cssHeight = Math.floor(pixelViewport.height / dpr);
+
+        canvas.width = Math.floor(pixelViewport.width);
+        canvas.height = Math.floor(pixelViewport.height);
+        canvas.style.width = `${cssWidth}px`;
+        canvas.style.height = `${cssHeight}px`;
 
         if (overlay) {
-          overlay.style.width = `${Math.floor(viewport.width)}px`;
-          overlay.style.height = `${Math.floor(viewport.height)}px`;
+          overlay.style.width = `${cssWidth}px`;
+          overlay.style.height = `${cssHeight}px`;
         }
 
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
 
-        renderTaskRef.current = pdfPage.render({
+        const task = pdfPage.render({
           canvas,
           canvasContext: ctx,
-          viewport,
-          transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined,
+          viewport: pixelViewport,
         });
-        await renderTaskRef.current.promise;
+        renderTaskRef.current = task;
+        await task.promise;
 
         if (cancelled || !textLayer) return;
 
         // Text layer for selection/search hits
-        const textContent = await pdfPage.getTextContent();
-        textLayer.innerHTML = "";
-        textLayer.style.width = `${Math.floor(viewport.width)}px`;
-        textLayer.style.height = `${Math.floor(viewport.height)}px`;
+        try {
+          const textContent = await pdfPage.getTextContent();
+          textLayer.innerHTML = "";
+          textLayer.style.width = `${cssWidth}px`;
+          textLayer.style.height = `${cssHeight}px`;
 
-        const tx = pdfjs.Util.transform(viewport.transform, [1, 0, 0, -1, 0, 0]);
-        for (const item of textContent.items as Array<{
-          str?: string;
-          width?: number;
-          height?: number;
-          transform?: number[];
-        }>) {
-          if (!item.str || !item.transform) continue;
-          const [a, b, c, d, e, f] = item.transform;
-          const [ta, tb, tc, td, te, tf] = pdfjs.Util.transform(tx, [a, b, c, d, e, f]);
-          const fontHeight = Math.hypot(tb, td);
-          const fontWidth = Math.hypot(ta, tc);
-          if (fontHeight === 0 || fontWidth === 0) continue;
-          const angle = Math.atan2(tb, ta);
-          const style = document.createElement("span");
-          style.textContent = item.str;
-          const left = te;
-          const top = tf - fontHeight;
-          style.style.left = `${(100 * left) / viewport.width}%`;
-          style.style.top = `${(100 * top) / viewport.height}%`;
-          style.style.fontSize = `${fontHeight}px`;
-          style.style.fontFamily = "sans-serif";
-          style.style.width = `${(100 * (item.width || fontWidth)) / viewport.width}%`;
-          if (angle !== 0) {
-            style.style.transform = `rotate(${angle}rad)`;
+          const cssViewport = pdfPage.getViewport({ scale: zoom });
+          const tx = pdfjs.Util.transform(cssViewport.transform, [1, 0, 0, -1, 0, 0]);
+          for (const item of textContent.items as Array<{
+            str?: string;
+            width?: number;
+            height?: number;
+            transform?: number[];
+          }>) {
+            if (!item.str || !item.transform) continue;
+            const [a, b, c, d, e, f] = item.transform;
+            const [ta, tb, tc, td, te, tf] = pdfjs.Util.transform(tx, [a, b, c, d, e, f]);
+            const fontHeight = Math.hypot(tb, td);
+            const fontWidth = Math.hypot(ta, tc);
+            if (fontHeight === 0 || fontWidth === 0) continue;
+            const angle = Math.atan2(tb, ta);
+            const style = document.createElement("span");
+            style.textContent = item.str;
+            const left = te;
+            const top = tf - fontHeight;
+            style.style.left = `${(100 * left) / cssViewport.width}%`;
+            style.style.top = `${(100 * top) / cssViewport.height}%`;
+            style.style.fontSize = `${fontHeight}px`;
+            style.style.fontFamily = "sans-serif";
+            style.style.width = `${(100 * (item.width || fontWidth)) / cssViewport.width}%`;
+            if (angle !== 0) {
+              style.style.transform = `rotate(${angle}rad)`;
+            }
+            textLayer.appendChild(style);
           }
-          textLayer.appendChild(style);
+        } catch {
+          // textLayer error should never break canvas
         }
       } catch (e) {
         const name = e instanceof Error ? e.name : "";
