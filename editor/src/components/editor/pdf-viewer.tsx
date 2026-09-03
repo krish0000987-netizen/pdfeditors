@@ -81,8 +81,11 @@ export function PDFViewer({
   const [error, setError] = useState<string | null>(null);
   const [rendering, setRendering] = useState(false);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
+  const [pdfDoc, setPdfDoc] = useState<pdfjs.PDFDocumentProxy | null>(null);
   const [isPasswordProtected, setIsPasswordProtected] = useState(false);
-  const [pdfPassword, setPdfPassword] = useState("");
+  const [passwordInput, setPasswordInput] = useState("");
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [unlocking, setUnlocking] = useState(false);
 
   // Dragging / Resizing State
   const [dragState, setDragState] = useState<{
@@ -99,54 +102,64 @@ export function PDFViewer({
     origRotation?: number;
   } | null>(null);
 
-  // Load document when bytes change or password provided
-  useEffect(() => {
-    if (!data) return;
-    let cancelled = false;
-    const bytes = new Uint8Array(data);
-    void Promise.resolve().then(() => {
-      if (!cancelled) {
-        setError(null);
-        setIsPasswordProtected(false);
-      }
-    });
+  // Load document when bytes change or password is provided
+  const loadDocument = useCallback(
+    async (pwd?: string) => {
+      if (!data) return;
+      setError(null);
+      setPasswordError(null);
+      if (pwd) setUnlocking(true);
 
-    const loadingTask = pdfjs.getDocument({
-      data: bytes,
-      password: pdfPassword || undefined,
-    });
+      try {
+        const bytes = new Uint8Array(data);
+        const loadingTask = pdfjs.getDocument({
+          data: bytes,
+          password: pwd || undefined,
+        });
 
-    loadingTask.onPassword = (_callback: (pwd: string) => void, _reason: number) => {
-      setIsPasswordProtected(true);
-    };
-
-    loadingTask.promise
-      .then(async (pdf) => {
-        if (cancelled) {
-          await pdf.cleanup();
-          return;
-        }
-        docRef.current = pdf;
-        setIsPasswordProtected(false);
-        onPageCount?.(pdf.numPages);
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        if (e?.name === "PasswordException") {
+        loadingTask.onPassword = (_callback: (pwd: string) => void, reason: number) => {
           setIsPasswordProtected(true);
+          setUnlocking(false);
+          if (reason === 2) {
+            setPasswordError("Incorrect password. Please try again.");
+          }
+        };
+
+        const pdf = await loadingTask.promise;
+        docRef.current = pdf;
+        setPdfDoc(pdf);
+        setIsPasswordProtected(false);
+        setPasswordError(null);
+        setUnlocking(false);
+        onPageCount?.(pdf.numPages);
+      } catch (e: unknown) {
+        setUnlocking(false);
+        const err = e as { name?: string; message?: string };
+        const msg = String(err?.message || "").toLowerCase();
+        if (err?.name === "PasswordException" || msg.includes("password")) {
+          setIsPasswordProtected(true);
+          if (pwd) {
+            setPasswordError("Incorrect password. Please try again.");
+          }
         } else {
-          setError(e instanceof Error ? e.message : "Failed to load PDF");
+          setError(err?.message || "Failed to load PDF");
         }
-      });
+      }
+    },
+    [data, onPageCount]
+  );
 
-    return () => {
-      cancelled = true;
-    };
-  }, [data, pdfPassword, onPageCount]);
-
-  // Render the current page & extract content if needed
   useEffect(() => {
-    const pdf = docRef.current;
+    setPdfDoc(null);
+    setIsPasswordProtected(false);
+    setPasswordInput("");
+    setPasswordError(null);
+    void loadDocument();
+  }, [data, loadDocument]);
+
+  // Render the current page & extract content when pdfDoc, page, or zoom changes
+  useEffect(() => {
+    const pdf = pdfDoc || docRef.current;
     const canvas = canvasRef.current;
     const overlay = overlayRef.current;
     if (!pdf || !canvas) return;
@@ -197,7 +210,11 @@ export function PDFViewer({
 
         // Auto-extract text and images for this page if not yet extracted
         const pageIdx = page - 1;
-        if (onPageExtracted && (!pageModel || (pageModel.textElements.length === 0 && pageModel.imageElements.length === 0))) {
+        if (
+          onPageExtracted &&
+          (!pageModel ||
+            (pageModel.textElements.length === 0 && pageModel.imageElements.length === 0))
+        ) {
           const textResult = await extractTextFromPdfPage(pdfPage, pageIdx);
           const imageResult = await extractImagesFromPdfPage(pdfPage, pageIdx);
           if (!cancelled) {
@@ -217,7 +234,7 @@ export function PDFViewer({
     return () => {
       cancelled = true;
     };
-  }, [data, page, zoom, pageModel, onPageExtracted]);
+  }, [pdfDoc, page, zoom, pageModel, onPageExtracted]);
 
   // Global mouse move and up for dragging / resizing
   useEffect(() => {
@@ -371,29 +388,58 @@ export function PDFViewer({
 
   if (isPasswordProtected) {
     return (
-      <div className="flex flex-col items-center justify-center p-12 bg-white rounded-xl shadow-lg max-w-md mx-auto my-12 border border-gray-200">
-        <Lock className="w-12 h-12 text-blue-600 mb-4" />
-        <h3 className="text-lg font-bold text-gray-900 mb-2">Password Protected PDF</h3>
-        <p className="text-xs text-gray-500 mb-4 text-center">
+      <div className="flex flex-col items-center justify-center p-8 bg-white rounded-2xl shadow-xl max-w-md mx-auto my-16 border border-gray-200 animate-in fade-in">
+        <div className="w-14 h-14 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mb-4 border border-blue-100">
+          <Lock className="w-7 h-7" />
+        </div>
+        <h3 className="text-lg font-bold text-gray-900 mb-1">Password Protected PDF</h3>
+        <p className="text-xs text-gray-500 mb-5 text-center leading-relaxed">
           This PDF document is encrypted. Please enter the password to view and edit its contents.
         </p>
-        <div className="flex w-full gap-2">
-          <input
-            type="password"
-            placeholder="Enter PDF password"
-            value={pdfPassword}
-            onChange={(e) => setPdfPassword(e.target.value)}
-            className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:border-blue-500"
-          />
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (passwordInput.trim()) {
+              void loadDocument(passwordInput.trim());
+            }
+          }}
+          className="w-full space-y-3"
+        >
+          <div className="space-y-1">
+            <input
+              type="password"
+              autoFocus
+              placeholder="Enter password"
+              value={passwordInput}
+              onChange={(e) => {
+                setPasswordInput(e.target.value);
+                if (passwordError) setPasswordError(null);
+              }}
+              className={`w-full px-3.5 py-2.5 border rounded-xl text-sm outline-none transition-all ${
+                passwordError
+                  ? "border-red-500 focus:ring-2 focus:ring-red-200"
+                  : "border-gray-300 focus:border-blue-600 focus:ring-2 focus:ring-blue-100"
+              }`}
+            />
+            {passwordError && (
+              <p className="text-xs text-red-600 font-medium">{passwordError}</p>
+            )}
+          </div>
           <button
-            onClick={() => {
-              if (pdfPassword) setError(null);
-            }}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700"
+            type="submit"
+            disabled={unlocking || !passwordInput.trim()}
+            className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-semibold shadow-sm transition-all disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
           >
-            Unlock
+            {unlocking ? (
+              <>
+                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                <span>Unlocking...</span>
+              </>
+            ) : (
+              <span>Unlock PDF</span>
+            )}
           </button>
-        </div>
+        </form>
       </div>
     );
   }
